@@ -427,10 +427,8 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
 
     boot_button_.OnClick([this]() {
       auto &app = Application::GetInstance();
-      if (app.GetDeviceState() == kDeviceStateStarting &&
-          !WifiStation::GetInstance().IsConnected()) {
-        ResetWifiConfiguration();
-      }
+      // BOOT single-click is reserved for chat (push-to-talk toggle).
+      // WiFi reset is handled by the dedicated 5-click gesture above.
       app.ToggleChatState();
     });
   }

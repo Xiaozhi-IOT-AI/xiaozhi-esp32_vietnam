@@ -4,6 +4,7 @@
 #include "settings.h"
 
 #include <esp_log.h>
+#include <esp_task_wdt.h>
 #include <cstring>
 #include <arpa/inet.h>
 #include "assets/lang_config.h"
@@ -47,6 +48,18 @@ MqttProtocol::~MqttProtocol() {
 
 bool MqttProtocol::Start() {
     return StartMqttClient(false);
+}
+
+void MqttProtocol::OnClockTick() {
+    if (mqtt_ == nullptr) {
+        return;
+    }
+    if (!mqtt_->IsConnected() || error_occurred_) {
+        return;
+    }
+    // Keep the application-level timeout from marking us offline while the
+    // underlying MQTT keepalive keeps the connection healthy.
+    last_incoming_time_ = std::chrono::steady_clock::now();
 }
 
 bool MqttProtocol::StartMqttClient(bool report_error) {
@@ -212,9 +225,21 @@ bool MqttProtocol::OpenAudioChannel() {
         return false;
     }
 
-    // 等待服务器响应
-    EventBits_t bits = xEventGroupWaitBits(event_group_handle_, MQTT_PROTOCOL_SERVER_HELLO_EVENT, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
-    if (!(bits & MQTT_PROTOCOL_SERVER_HELLO_EVENT)) {
+    // 等待服务器响应（分段等待避免阻塞过久导致看门狗复位）
+    bool got_hello = false;
+    const int max_wait_ms = 10000;
+    const int step_ms = 100;
+    for (int waited = 0; waited < max_wait_ms; waited += step_ms) {
+        EventBits_t bits = xEventGroupWaitBits(event_group_handle_, MQTT_PROTOCOL_SERVER_HELLO_EVENT,
+                                              pdTRUE, pdFALSE, pdMS_TO_TICKS(step_ms));
+        if (bits & MQTT_PROTOCOL_SERVER_HELLO_EVENT) {
+            got_hello = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    if (!got_hello) {
         ESP_LOGE(TAG, "Failed to receive server hello");
         SetError(Lang::Strings::SERVER_TIMEOUT);
         return false;

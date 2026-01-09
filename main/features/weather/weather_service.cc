@@ -61,13 +61,13 @@ std::string WeatherService::CapitalizeWords(std::string str) {
     return str;
 }
 
-std::string WeatherService::GetCityFromIP() {
-    std::string detected_city = "";
+bool WeatherService::GetLocationFromIP(IpLocation& out) {
+    out = IpLocation{};
     
     // Check WiFi connection
     if (!WifiStation::GetInstance().IsConnected()) {
         ESP_LOGE(TAG, "GetCityFromIP: No WiFi connection");
-        return "";
+        return false;
     }
 
     auto& board = Board::GetInstance();
@@ -78,7 +78,7 @@ std::string WeatherService::GetCityFromIP() {
     
     if (!http->Open("GET", IP_LOCATION_API_ENDPOINT)) {
         ESP_LOGE(TAG, "Failed to open HTTP connection for IP detection");
-        return "";
+        return false;
     }
 
     int status_code = http->GetStatusCode();
@@ -95,10 +95,31 @@ std::string WeatherService::GetCityFromIP() {
                 cJSON* success = cJSON_GetObjectItem(root, "success");
                 
                 if (cJSON_IsBool(success) && cJSON_IsTrue(success)) {
-                    cJSON* city_json = cJSON_GetObjectItem(root, "region");
+                    cJSON* city_json = cJSON_GetObjectItem(root, "city");
+                    cJSON* region_json = cJSON_GetObjectItem(root, "region");
+                    cJSON* lat_json = cJSON_GetObjectItem(root, "latitude");
+                    cJSON* lon_json = cJSON_GetObjectItem(root, "longitude");
+
                     if (cJSON_IsString(city_json)) {
-                        detected_city = city_json->valuestring;
-                        ESP_LOGI(TAG, "Auto-detected Region success: %s", detected_city.c_str());
+                        out.city = city_json->valuestring;
+                    }
+                    if (cJSON_IsString(region_json)) {
+                        out.region = region_json->valuestring;
+                    }
+                    if (cJSON_IsNumber(lat_json) && cJSON_IsNumber(lon_json)) {
+                        out.latitude = lat_json->valuedouble;
+                        out.longitude = lon_json->valuedouble;
+                        out.has_geo = true;
+                    }
+
+                    if (!out.city.empty()) {
+                        ESP_LOGI(TAG, "Auto-detected City success: %s", out.city.c_str());
+                    } else if (!out.region.empty()) {
+                        ESP_LOGI(TAG, "Auto-detected Region success: %s", out.region.c_str());
+                    }
+
+                    if (out.has_geo) {
+                        ESP_LOGI(TAG, "Auto-detected Geo: lat=%.6f lon=%.6f", out.latitude, out.longitude);
                     }
                 } else {
                     ESP_LOGW(TAG, "IP-Who-Is returned success=false");
@@ -113,7 +134,18 @@ std::string WeatherService::GetCityFromIP() {
     }
     
     http->Close();
-    return detected_city;
+    return (!out.city.empty() || !out.region.empty() || out.has_geo);
+}
+
+std::string WeatherService::GetCityFromIP() {
+    IpLocation loc;
+    if (!GetLocationFromIP(loc)) {
+        return "";
+    }
+    if (!loc.city.empty()) {
+        return loc.city;
+    }
+    return loc.region;
 }
 
 bool WeatherService::FetchWeatherData() {
@@ -140,30 +172,15 @@ bool WeatherService::FetchWeatherData() {
     std::string city = city_.empty() ? weather_settings.GetString("weather_city", "") : city_;
     std::string api_key = api_key_.empty() ? weather_settings.GetString("weather_api_key", "") : api_key_;
 
+    // Force fixed city (user request): only fetch Ho Chi Minh City weather.
+    // This also avoids auto-IP detection (ipwho.is) which can increase stack usage.
+    city = "Ho Chi Minh City,VN";
+
     if (api_key.empty()) {
         api_key = OPEN_WEATHERMAP_API_KEY_DEFAULT;
     }
     
-    // Auto-detect city if not set
-    if (city.empty() || city == "auto") {
-        ESP_LOGI(TAG, "City not set or 'auto', detecting via IP...");
-        
-        for (int i = 0; i < 2; i++) {
-            std::string auto_city = GetCityFromIP();
-            if (!auto_city.empty()) {
-                city = auto_city;
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-
-        if (city.empty() || city == "auto") {
-            ESP_LOGW(TAG, "Failed to detect IP location, fallback to Hanoi");
-            city = CITY_LOCATION_DEFAULT;
-        }
-    }
-
-    // Call OpenWeatherMap API
+    // Call OpenWeatherMap API (fixed city)
     std::string url = std::string(WEATHER_API_ENDPOINT) + "?q=" + UrlEncode(city) +
                       "&appid=" + api_key + "&units=metric&lang=vi";
 
@@ -208,7 +225,9 @@ bool WeatherService::FetchWeatherData() {
                 cJSON* icon = cJSON_GetObjectItem(w0, "icon");
                 cJSON* desc = cJSON_GetObjectItem(w0, "description");
 
-                weather_info_.city = name->valuestring;
+                // Lock city name (user request): always show Ho Chi Minh City.
+                // Keep API "name" parsing intact for validation, but override display.
+                weather_info_.city = "Thành phố Hồ Chí Minh";
                 if (cJSON_IsNumber(temp)) weather_info_.temp = (float)temp->valuedouble;
                 if (cJSON_IsNumber(humidity)) weather_info_.humidity = humidity->valueint;
                 if (cJSON_IsNumber(feels_like)) weather_info_.feels_like = (float)feels_like->valuedouble;

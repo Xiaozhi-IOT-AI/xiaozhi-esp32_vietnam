@@ -10,6 +10,7 @@
 #include <mutex>
 #include <deque>
 #include <memory>
+#include <atomic>
 
 #include "protocol.h"
 #include "ota.h"
@@ -100,6 +101,9 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
     TaskHandle_t main_event_loop_task_handle_ = nullptr;
+
+    std::atomic<bool> tts_stream_active_{false};
+    std::atomic<bool> tts_audio_received_{false};
 
     void OnWakeWordDetected();
     void CheckNewVersion(Ota& ota);

@@ -22,6 +22,30 @@ import json
 from pathlib import Path
 
 
+def _load_json_arg(value: str):
+    """Load JSON from a file path or inline JSON string."""
+    if not value:
+        return None
+
+    value = value.strip()
+    if value.startswith("{") or value.startswith("["):
+        return json.loads(value)
+
+    if os.path.exists(value) and os.path.isfile(value):
+        with open(value, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    raise ValueError(f"skin_json must be a JSON string or an existing file path: {value}")
+
+
+def _maybe_copy_asset_file(path_value: str, assets_dir: str):
+    if not path_value:
+        return None
+    filename = os.path.basename(path_value)
+    copy_file(path_value, os.path.join(assets_dir, filename))
+    return filename
+
+
 def ensure_dir(directory):
     """Ensure directory exists, create if not"""
     os.makedirs(directory, exist_ok=True)
@@ -276,7 +300,7 @@ def process_board_collection(target_board_dir, res_path, assets_dir):
     
     return emoji_collection, icon_collection, layout_json
 
-def generate_index_json(assets_dir, srmodels, text_font, emoji_collection, icon_collection, layout_json):
+def generate_index_json(assets_dir, srmodels, text_font, emoji_collection, icon_collection, layout_json, skin):
     """Generate index.json file"""
     index_data = {
         "version": 1
@@ -296,6 +320,9 @@ def generate_index_json(assets_dir, srmodels, text_font, emoji_collection, icon_
     
     if layout_json:
         index_data["layout"] = layout_json
+
+    if skin:
+        index_data["skin"] = skin
     
     # Write index.json
     index_path = os.path.join(assets_dir, "index.json")
@@ -303,6 +330,63 @@ def generate_index_json(assets_dir, srmodels, text_font, emoji_collection, icon_
         json.dump(index_data, f, indent=4, ensure_ascii=False)
     
     print(f"Generated: {index_path}")
+
+
+def process_skin(args, assets_dir):
+    """Build skin object for index.json and copy any referenced background images."""
+    skin = {}
+
+    # Base skin from JSON (file path or inline JSON)
+    if args.skin_json:
+        try:
+            loaded = _load_json_arg(args.skin_json)
+            if isinstance(loaded, dict):
+                skin = loaded
+            else:
+                print("Warning: --skin_json must be a JSON object; ignoring")
+        except Exception as e:
+            print(f"Warning: failed to parse --skin_json: {e}")
+
+    # Overlay explicit CLI values (if provided)
+    def ensure_variant(variant: str):
+        if variant not in skin or not isinstance(skin.get(variant), dict):
+            skin[variant] = {}
+
+    # Light
+    if args.light_text_color or args.light_background_color or args.light_background_image:
+        ensure_variant("light")
+        if args.light_text_color:
+            skin["light"]["text_color"] = args.light_text_color
+        if args.light_background_color:
+            skin["light"]["background_color"] = args.light_background_color
+        if args.light_background_image:
+            skin["light"]["background_image"] = _maybe_copy_asset_file(args.light_background_image, assets_dir)
+
+    # Dark
+    if args.dark_text_color or args.dark_background_color or args.dark_background_image:
+        ensure_variant("dark")
+        if args.dark_text_color:
+            skin["dark"]["text_color"] = args.dark_text_color
+        if args.dark_background_color:
+            skin["dark"]["background_color"] = args.dark_background_color
+        if args.dark_background_image:
+            skin["dark"]["background_image"] = _maybe_copy_asset_file(args.dark_background_image, assets_dir)
+
+    # Normalize empty skin
+    if not isinstance(skin, dict) or len(skin) == 0:
+        return None
+
+    # Note: firmware expects background_image to be LVGL cbin/bin (not PNG).
+    for variant in ("light", "dark"):
+        if isinstance(skin.get(variant), dict) and isinstance(skin[variant].get("background_image"), str):
+            bg = skin[variant]["background_image"]
+            if bg and not bg.lower().endswith('.bin'):
+                print(
+                    f"Warning: skin.{variant}.background_image='{bg}' is not .bin; "
+                    "firmware uses LvglCBinImage and may fail to load non-bin images"
+                )
+
+    return skin
 
 
 def generate_config_json(build_dir, assets_dir):
@@ -345,6 +429,15 @@ def main():
 
     parser.add_argument('--res_path', help='Path to res directory')
     parser.add_argument('--target_board', help='Path to target board directory')
+
+    # Theme / skin (optional)
+    parser.add_argument('--skin_json', help='Path to skin JSON file OR inline JSON for index.json "skin"')
+    parser.add_argument('--light_text_color', help='Skin light.text_color (e.g. #FFFFFF)')
+    parser.add_argument('--light_background_color', help='Skin light.background_color (e.g. #000000)')
+    parser.add_argument('--light_background_image', help='Path to light background image asset (recommended: .bin)')
+    parser.add_argument('--dark_text_color', help='Skin dark.text_color (e.g. #FFFFFF)')
+    parser.add_argument('--dark_background_color', help='Skin dark.background_color (e.g. #000000)')
+    parser.add_argument('--dark_background_image', help='Path to dark background image asset (recommended: .bin)')
     
     args = parser.parse_args()
     
@@ -367,6 +460,8 @@ def main():
     srmodels = process_wakenet_model(args.wakenet_model, build_dir, assets_dir)
     text_font = process_text_font(args.text_font, assets_dir)
 
+    skin = process_skin(args, assets_dir)
+
     if(args.target_board):
         emoji_collection, icon_collection, layout_json = process_board_collection(args.target_board, args.res_path, assets_dir)
     else:
@@ -375,7 +470,7 @@ def main():
         layout_json = []
     
     # Generate index.json
-    generate_index_json(assets_dir, srmodels, text_font, emoji_collection, icon_collection, layout_json)
+    generate_index_json(assets_dir, srmodels, text_font, emoji_collection, icon_collection, layout_json, skin)
     
     # Generate config.json
     config_path = generate_config_json(build_dir, assets_dir)

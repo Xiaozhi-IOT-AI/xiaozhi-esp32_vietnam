@@ -58,7 +58,7 @@ Dự án này được fork và phát triển từ [xiaozhi-esp32](https://githu
 
 #### Hệ Thống OTA online
 - Cập nhật firmware qua mạng (Over-The-Air)
-- Link OTA: [https://ota-server.xiaozhi-ota.workers.dev/ota/](https://ota-server.xiaozhi-ota.workers.dev/ota/)
+- Link OTA: [https://xiaozhi-ai-iot.vn/api/v1/ota](https://xiaozhi-ai-iot.vn/api/v1/ota)
 - Không cần kết nối dây, cập nhật từ xa
 
 #### Hệ Thống OTA WebServer

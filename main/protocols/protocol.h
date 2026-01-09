@@ -68,6 +68,10 @@ public:
     virtual void CloseAudioChannel() = 0;
     virtual bool IsAudioChannelOpened() const = 0;
     virtual bool SendAudio(std::unique_ptr<AudioStreamPacket> packet) = 0;
+
+    // Called from the application's main event loop once per second.
+    // Implementations can use it to send keepalive pings or refresh liveness.
+    virtual void OnClockTick() {}
     virtual void SendWakeWordDetected(const std::string& wake_word);
     virtual void SendStartListening(ListeningMode mode);
     virtual void SendStopListening();

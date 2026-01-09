@@ -50,6 +50,7 @@ private:
 
     // Buffer dữ liệu
     int16_t* final_pcm_data_fft = nullptr;
+    size_t final_pcm_data_fft_size_bytes_ = 0;
     int16_t* audio_data_ = nullptr;
     int16_t* frame_audio_data = nullptr;
     int audio_display_last_update = 0;

@@ -166,7 +166,7 @@
         <div class="upload-box" id="uploadArea">
             <div class="upload-icon">🎨</div>
             <div class="upload-text">Click or drag file here</div>
-            <div class="upload-hint">Supported: .bin files only</div>
+            <div class="upload-hint">Supported: .bin or .packl files</div>
             <input type="file" id="fileInput" accept=".bin" />
         </div>
         
@@ -248,8 +248,9 @@
         });
 
         function selectFile(file) {
-            if (!file.name.endsWith('.bin')) {
-                showStatus('❌ Only .bin files supported', 'error');
+            const lower = file.name.toLowerCase();
+            if (!(lower.endsWith('.bin') || lower.endsWith('.packl'))) {
+                showStatus('❌ Only .bin or .packl files supported', 'error');
                 return;
             }
             

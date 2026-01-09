@@ -1467,7 +1467,7 @@ void LcdDisplay::StartFFT() {
     xTaskCreatePinnedToCore(
         periodicUpdateTaskWrapper,
         "display_fft",      // Task name
-        1024 * 3,           // Stack size
+        1024 * 6,           // Stack size
         this,               // Parameter
         1,                  // Priority
         &fft_task_handle,   // Save to member variable
@@ -2101,22 +2101,53 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
     }
 }
 
-int16_t* LcdDisplay::MakeAudioBuffFFT(size_t sample_count) {
-    if (final_pcm_data_fft == nullptr) {
-        final_pcm_data_fft = (int16_t *)heap_caps_malloc( sample_count, MALLOC_CAP_SPIRAM);
+int16_t* LcdDisplay::MakeAudioBuffFFT(size_t sample_bytes) {
+    // FFT pipeline assumes 1152 samples (MP3 frame). Ensure buffer is never smaller than that
+    // to avoid out-of-bounds reads in processAudioData().
+    constexpr size_t kFftFrameBytes = sizeof(int16_t) * 1152;
+    const size_t required_bytes = std::max(sample_bytes, kFftFrameBytes);
+
+    if (final_pcm_data_fft == nullptr || final_pcm_data_fft_size_bytes_ < required_bytes) {
+        if (final_pcm_data_fft != nullptr) {
+            heap_caps_free(final_pcm_data_fft);
+            final_pcm_data_fft = nullptr;
+            final_pcm_data_fft_size_bytes_ = 0;
+        }
+
+        final_pcm_data_fft = (int16_t*)heap_caps_malloc(required_bytes, MALLOC_CAP_SPIRAM);
+        if (final_pcm_data_fft == nullptr) {
+            ESP_LOGE(TAG, "MakeAudioBuffFFT: alloc failed (%u bytes)", (unsigned)required_bytes);
+            return nullptr;
+        }
+        final_pcm_data_fft_size_bytes_ = required_bytes;
     }
+
     return final_pcm_data_fft;
 }
 
-void LcdDisplay::FeedAudioDataFFT(int16_t* data, size_t sample_count) {
+void LcdDisplay::FeedAudioDataFFT(int16_t* data, size_t sample_bytes) {
+    constexpr size_t kFftFrameBytes = sizeof(int16_t) * 1152;
+    const size_t copy_bytes = std::min(sample_bytes, kFftFrameBytes);
+
+    if (final_pcm_data_fft == nullptr || final_pcm_data_fft_size_bytes_ < kFftFrameBytes) {
+        // Defensive: allocate/resize if caller didn't do it (or frame size grew)
+        if (MakeAudioBuffFFT(kFftFrameBytes) == nullptr) {
+            return;
+        }
+    }
+
     // Copy PCM data for FFT display
-    memcpy( final_pcm_data_fft, data, sample_count);
+    memcpy(final_pcm_data_fft, data, copy_bytes);
+    if (copy_bytes < kFftFrameBytes) {
+        memset(((uint8_t*)final_pcm_data_fft) + copy_bytes, 0, kFftFrameBytes - copy_bytes);
+    }
 }
 
 void LcdDisplay::ReleaseAudioBuffFFT(int16_t* buffer) {
     if (final_pcm_data_fft != nullptr) {
         heap_caps_free(final_pcm_data_fft);
         final_pcm_data_fft = nullptr;
+        final_pcm_data_fft_size_bytes_ = 0;
     }
 }
 

@@ -38,6 +38,16 @@ private:
     WeatherService();
     ~WeatherService() = default;
 
+    struct IpLocation {
+        std::string city;
+        std::string region;
+        double latitude = 0.0;
+        double longitude = 0.0;
+        bool has_geo = false;
+    };
+
+    static bool GetLocationFromIP(IpLocation& out);
+
     WeatherInfo weather_info_;
     std::string api_key_;
     std::string city_;

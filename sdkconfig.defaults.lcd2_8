@@ -1,0 +1,24 @@
+# Board: Xiaozhi AI IoT Vietnam ES3N28P LCD 2.8 inch (ESP32-S3)
+# Used by: SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.lcd2_8"
+
+# Select the board implementation under main/boards/
+CONFIG_BOARD_TYPE_XIAOZHI_AI_IOT_VIETNAM_ES3N28P_LCD_2_8=y
+
+# Touch panel
+CONFIG_TOUCH_PANEL_ENABLE=y
+
+# Ensure OTA URL is set even if sdkconfig is reused
+CONFIG_OTA_URL="https://xiaozhi-ai-iot.vn/api/v1/ota"
+
+# Optional: SD card defaults matching board config.json intent
+CONFIG_SD_CARD_ENABLE=y
+CONFIG_SD_CARD_MMC_INTERFACE=y
+
+# Idle display features
+CONFIG_WEATHER_IDLE_DISPLAY_ENABLE=y
+CONFIG_LUNAR_IDLE_DISPLAY_ENABLE=y
+
+# FATFS settings (safe defaults)
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_FATFS_FS_LOCK=5

@@ -19,6 +19,80 @@
 
 static const char *TAG = "WifiBoard";
 
+namespace {
+
+const std::string_view& DigitSound(char digit) {
+    switch (digit) {
+        case '0': return Lang::Sounds::OGG_0;
+        case '1': return Lang::Sounds::OGG_1;
+        case '2': return Lang::Sounds::OGG_2;
+        case '3': return Lang::Sounds::OGG_3;
+        case '4': return Lang::Sounds::OGG_4;
+        case '5': return Lang::Sounds::OGG_5;
+        case '6': return Lang::Sounds::OGG_6;
+        case '7': return Lang::Sounds::OGG_7;
+        case '8': return Lang::Sounds::OGG_8;
+        case '9': return Lang::Sounds::OGG_9;
+        default:  return Lang::Sounds::OGG_0; // unused
+    }
+}
+
+void SpeakDigits(Application& application, const std::string& text) {
+    // Speak only digits. Treat '.' and '-' as separators.
+    // Timing is intentionally conservative to avoid overlap on constrained devices.
+    for (char c : text) {
+        if (c >= '0' && c <= '9') {
+            application.PlaySound(DigitSound(c));
+            vTaskDelay(pdMS_TO_TICKS(450));
+            continue;
+        }
+        if (c == '.' || c == '-') {
+            vTaskDelay(pdMS_TO_TICKS(650));
+            continue;
+        }
+    }
+}
+
+std::string ExtractSsidSuffixDigits(const std::string& ssid) {
+    // Expected: PREFIX-<digits>
+    auto pos = ssid.find('-');
+    if (pos == std::string::npos) {
+        return {};
+    }
+    std::string suffix = ssid.substr(pos + 1);
+    std::string digits;
+    digits.reserve(suffix.size());
+    for (char c : suffix) {
+        if (c >= '0' && c <= '9') {
+            digits.push_back(c);
+        }
+    }
+    return digits;
+}
+
+std::string ExtractIpFromUrl(const std::string& url) {
+    // Handles "http://192.168.4.1" (default) and returns just the host portion.
+    std::string s = url;
+    const char* http = "http://";
+    const char* https = "https://";
+    if (s.rfind(http, 0) == 0) {
+        s.erase(0, strlen(http));
+    } else if (s.rfind(https, 0) == 0) {
+        s.erase(0, strlen(https));
+    }
+    auto slash = s.find('/');
+    if (slash != std::string::npos) {
+        s.resize(slash);
+    }
+    auto colon = s.find(':');
+    if (colon != std::string::npos) {
+        s.resize(colon);
+    }
+    return s;
+}
+
+}  // namespace
+
 WifiBoard::WifiBoard() {
     Settings settings("wifi", true);
     wifi_config_mode_ = settings.GetInt("force_ap") == 1;
@@ -38,7 +112,7 @@ void WifiBoard::EnterWifiConfigMode() {
 
     auto& wifi_ap = WifiConfigurationAp::GetInstance();
     wifi_ap.SetLanguage(Lang::CODE);
-    wifi_ap.SetSsidPrefix("TienHuyIoT");
+    wifi_ap.SetSsidPrefix("HIENAN");
     wifi_ap.Start();
 
     // 等待 1.5 秒显示开发板信息
@@ -53,6 +127,22 @@ void WifiBoard::EnterWifiConfigMode() {
     
     // 播报配置 WiFi 的提示
     application.Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+
+    // Option B: read out SSID suffix digits + IP digits (hands-free setup).
+    // SSID uses digits-only suffix from WifiConfigurationAp.
+    vTaskDelay(pdMS_TO_TICKS(800));
+    {
+        std::string ssid_digits = ExtractSsidSuffixDigits(wifi_ap.GetSsid());
+        if (!ssid_digits.empty()) {
+            SpeakDigits(application, ssid_digits);
+            vTaskDelay(pdMS_TO_TICKS(900));
+        }
+
+        std::string ip = ExtractIpFromUrl(wifi_ap.GetWebServerUrl());
+        if (!ip.empty()) {
+            SpeakDigits(application, ip);
+        }
+    }
 
     #if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
     auto display = Board::GetInstance().GetDisplay();

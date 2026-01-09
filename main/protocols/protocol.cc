@@ -65,6 +65,7 @@ void Protocol::SendStartListening(ListeningMode mode) {
         message += ",\"mode\":\"manual\"";
     }
     message += "}";
+    ESP_LOGI(TAG, ">> listen/start mode=%d", (int)mode);
     SendText(message);
 }
 

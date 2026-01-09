@@ -1,0 +1,12 @@
+{
+  "light": {
+    "text_color": "#111111",
+    "background_color": "#FFFFFF",
+    "background_image": "bg_light.bin"
+  },
+  "dark": {
+    "text_color": "#FFFFFF",
+    "background_color": "#000000",
+    "background_image": "bg_dark.bin"
+  }
+}

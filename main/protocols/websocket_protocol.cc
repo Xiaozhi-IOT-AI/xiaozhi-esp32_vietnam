@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>
 #include <arpa/inet.h>
 #include "assets/lang_config.h"
 
@@ -21,8 +22,72 @@ WebsocketProtocol::~WebsocketProtocol() {
 }
 
 bool WebsocketProtocol::Start() {
-    // Only connect to server when audio channel is needed
-    return true;
+    // Default behavior is lazy-connect (connect only when audio channel is needed).
+    // For the LCD2.8 Vietnam board we want the device to remain online while idle
+    // so the server can push messages.
+    bool default_keep_connected = false;
+#if CONFIG_BOARD_TYPE_XIAOZHI_AI_IOT_VIETNAM_ES3N28P_LCD_2_8
+    default_keep_connected = true;
+#endif
+
+    Settings settings("websocket", false);
+    keep_connected_ = settings.GetBool("keep_connected", default_keep_connected);
+    ping_interval_seconds_ = settings.GetInt("ping_interval", 30);
+
+    // Safety clamp: avoid overly aggressive keepalive that can overload servers.
+    // Note: unit is seconds.
+    if (ping_interval_seconds_ > 0 && ping_interval_seconds_ < 5) {
+        ESP_LOGW(TAG, "ping_interval=%ds is too low; clamping to 5s", ping_interval_seconds_);
+        ping_interval_seconds_ = 5;
+    }
+
+    ESP_LOGI(TAG, "keep_connected=%d ping_interval=%ds default_keep_connected=%d",
+             keep_connected_, ping_interval_seconds_, default_keep_connected);
+    if (!keep_connected_) {
+        ESP_LOGW(TAG, "keep_connected is disabled; server push messages may not arrive while idle (lazy-connect mode)");
+    }
+
+    if (!keep_connected_) {
+        return true;
+    }
+
+    if (IsAudioChannelOpened()) {
+        return true;
+    }
+    return OpenAudioChannel();
+}
+
+void WebsocketProtocol::OnClockTick() {
+    if (!keep_connected_) {
+        return;
+    }
+    if (websocket_ == nullptr || !websocket_->IsConnected() || error_occurred_) {
+        ESP_LOGD(TAG, "WebSocket not ready for ping: connected=%d, error=%d", 
+                 websocket_ ? websocket_->IsConnected() : 0, error_occurred_);
+        return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (ping_interval_seconds_ <= 0) {
+        return;
+    }
+
+    if (last_ping_time_.time_since_epoch().count() == 0) {
+        last_ping_time_ = now;
+        last_incoming_time_ = now;
+        return;
+    }
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_ping_time_).count();
+    if (elapsed < ping_interval_seconds_) {
+        return;
+    }
+
+    ESP_LOGD(TAG, "Sending WebSocket ping");
+    websocket_->Ping();
+    last_ping_time_ = now;
+    // Treat successful keepalive as activity so we don't self-timeout while idle.
+    last_incoming_time_ = now;
 }
 
 bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
@@ -76,7 +141,52 @@ bool WebsocketProtocol::IsAudioChannelOpened() const {
 }
 
 void WebsocketProtocol::CloseAudioChannel() {
+    ESP_LOGI(TAG, "CloseAudioChannel called, keep_connected_: %d", keep_connected_);
+    if (keep_connected_) {
+        // Keep the websocket alive so the server can push messages while idle.
+        // But still trigger the closed callback to transition state to idle.
+        ESP_LOGI(TAG, "Keeping websocket alive for server push, but triggering close callback");
+        if (on_audio_channel_closed_ != nullptr) {
+            on_audio_channel_closed_();
+        }
+        return;
+    }
+    ESP_LOGI(TAG, "Closing websocket");
     websocket_.reset();
+}
+
+void WebsocketProtocol::ScheduleReconnect() {
+    if (!keep_connected_) {
+        return;
+    }
+    if (reconnecting_.exchange(true)) {
+        return;
+    }
+
+    xTaskCreate([](void* arg) {
+        auto self = static_cast<WebsocketProtocol*>(arg);
+
+        // Exponential backoff reconnect loop to avoid overwhelming the server/network
+        // when handshake fails or connectivity is unstable.
+        constexpr int kMaxAttempts = 10;
+        constexpr int kInitialDelayMs = 1000;
+        constexpr int kMaxDelayMs = 30000;
+        int delay_ms = kInitialDelayMs;
+        for (int i = 0; i < kMaxAttempts; ++i) {
+            if (!self->keep_connected_) {
+                break;
+            }
+            if (self->IsAudioChannelOpened()) {
+                break;
+            }
+            self->OpenAudioChannel();
+
+            vTaskDelay(pdMS_TO_TICKS(delay_ms));
+            delay_ms = std::min(delay_ms * 2, kMaxDelayMs);
+        }
+        self->reconnecting_.store(false);
+        vTaskDelete(nullptr);
+    }, "ws_reconnect", 4096, this, 3, nullptr);
 }
 
 bool WebsocketProtocol::OpenAudioChannel() {
@@ -87,6 +197,8 @@ bool WebsocketProtocol::OpenAudioChannel() {
     if (version != 0) {
         version_ = version;
     }
+
+    ping_interval_seconds_ = settings.GetInt("ping_interval", ping_interval_seconds_);
 
     error_occurred_ = false;
 
@@ -169,6 +281,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
         if (on_audio_channel_closed_ != nullptr) {
             on_audio_channel_closed_();
         }
+        ScheduleReconnect();
     });
 
     ESP_LOGI(TAG, "Connecting to websocket server: %s with version: %d", url.c_str(), version_);
@@ -178,15 +291,30 @@ bool WebsocketProtocol::OpenAudioChannel() {
         return false;
     }
 
+    last_incoming_time_ = std::chrono::steady_clock::now();
+    last_ping_time_ = last_incoming_time_;
+
     // Send hello message to describe the client
     auto message = GetHelloMessage();
     if (!SendText(message)) {
         return false;
     }
 
-    // Wait for server hello
-    EventBits_t bits = xEventGroupWaitBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
-    if (!(bits & WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT)) {
+    // Wait for server hello (chunked wait to avoid long blocking).
+    bool got_hello = false;
+    const int max_wait_ms = 10000;
+    const int step_ms = 100;
+    for (int waited = 0; waited < max_wait_ms; waited += step_ms) {
+        EventBits_t bits = xEventGroupWaitBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT,
+                                              pdTRUE, pdFALSE, pdMS_TO_TICKS(step_ms));
+        if (bits & WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT) {
+            got_hello = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    if (!got_hello) {
         ESP_LOGE(TAG, "Failed to receive server hello");
         SetError(Lang::Strings::SERVER_TIMEOUT);
         return false;

@@ -30,6 +30,7 @@ private:
     Button volume_down_button_;
 
     void InitializeDisplayI2c() {
+        display_i2c_bus_ = nullptr;
         i2c_master_bus_config_t bus_config = {
             .i2c_port = (i2c_port_t)0,
             .sda_io_num = DISPLAY_SDA_PIN,
@@ -42,10 +43,22 @@ private:
                 .enable_internal_pullup = 1,
             },
         };
-        ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &display_i2c_bus_));
+        esp_err_t err = i2c_new_master_bus(&bus_config, &display_i2c_bus_);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "I2C bus init failed (no display?): %s", esp_err_to_name(err));
+            display_i2c_bus_ = nullptr;
+        }
     }
 
     void InitializeSsd1306Display() {
+        // Default to NoDisplay; upgrade to OledDisplay only if init succeeds.
+        display_ = new NoDisplay();
+
+        if (display_i2c_bus_ == nullptr) {
+            ESP_LOGW(TAG, "Display I2C bus not available; running without display");
+            return;
+        }
+
         // SSD1306 config
         esp_lcd_panel_io_i2c_config_t io_config = {
             .dev_addr = 0x3C,
@@ -62,7 +75,12 @@ private:
             .scl_speed_hz = 400 * 1000,
         };
 
-        ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c_v2(display_i2c_bus_, &io_config, &panel_io_));
+        esp_err_t err = esp_lcd_new_panel_io_i2c_v2(display_i2c_bus_, &io_config, &panel_io_);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "SSD1306 panel IO init failed (no OLED?): %s", esp_err_to_name(err));
+            panel_io_ = nullptr;
+            return;
+        }
 
         ESP_LOGI(TAG, "Install SSD1306 driver");
         esp_lcd_panel_dev_config_t panel_config = {};
@@ -74,21 +92,37 @@ private:
         };
         panel_config.vendor_config = &ssd1306_config;
 
-        ESP_ERROR_CHECK(esp_lcd_new_panel_ssd1306(panel_io_, &panel_config, &panel_));
+        err = esp_lcd_new_panel_ssd1306(panel_io_, &panel_config, &panel_);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "SSD1306 driver init failed (no OLED?): %s", esp_err_to_name(err));
+            panel_ = nullptr;
+            return;
+        }
         ESP_LOGI(TAG, "SSD1306 driver installed");
 
         // Reset the display
-        ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
-        if (esp_lcd_panel_init(panel_) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to initialize display");
-            display_ = new NoDisplay();
+        err = esp_lcd_panel_reset(panel_);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "SSD1306 reset failed (no OLED?): %s", esp_err_to_name(err));
+            return;
+        }
+
+        err = esp_lcd_panel_init(panel_);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "SSD1306 init failed (no OLED?): %s", esp_err_to_name(err));
             return;
         }
 
         // Set the display to on
         ESP_LOGI(TAG, "Turning display on");
-        ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));
 
+        err = esp_lcd_panel_disp_on_off(panel_, true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "SSD1306 display on/off failed: %s", esp_err_to_name(err));
+            return;
+        }
+
+        delete display_;
         display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     }
 
@@ -161,6 +195,7 @@ public:
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
 
+        // Make display optional: if OLED is missing, fall back to NoDisplay.
         InitializeDisplayI2c();
         InitializeSsd1306Display();
         InitializeButtons();

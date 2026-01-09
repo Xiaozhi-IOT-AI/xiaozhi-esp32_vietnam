@@ -24,6 +24,7 @@ public:
     ~Assets();
 
     bool Download(std::string url, std::function<void(int progress, size_t speed)> progress_callback);
+    bool InstallFromFile(const std::string& path, std::function<void(int progress, size_t speed)> progress_callback = nullptr);
     bool Apply();
     bool GetAssetData(const std::string& name, void*& ptr, size_t& size);
 

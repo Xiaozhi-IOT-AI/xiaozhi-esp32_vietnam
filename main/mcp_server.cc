@@ -6,6 +6,7 @@
 #include "mcp_server.h"
 #include <esp_log.h>
 #include <esp_app_desc.h>
+#include <esp_timer.h>
 #include <algorithm>
 #include <cstring>
 #include <esp_pthread.h>
@@ -1490,6 +1491,8 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
 }
 
 void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments) {
+    const int64_t queued_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "tools/call queued id=%d tool=%s", id, tool_name.c_str());
     auto tool_iter = std::find_if(tools_.begin(), tools_.end(), 
                                  [&tool_name](const McpTool* tool) { 
                                      return tool->name() == tool_name; 
@@ -1533,9 +1536,21 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
 
     // Use main thread to call the tool
     auto& app = Application::GetInstance();
-    app.Schedule([this, id, tool_iter, arguments = std::move(arguments)]() {
+    app.Schedule([this, id, tool_iter, arguments = std::move(arguments), queued_us]() {
         try {
-            ReplyResult(id, (*tool_iter)->Call(arguments));
+            const int64_t exec_us = esp_timer_get_time();
+            ESP_LOGI(TAG, "tools/call exec id=%d tool=%s queued_delay=%lldms",
+                     id, (*tool_iter)->name().c_str(), (long long)((exec_us - queued_us) / 1000));
+
+            const int64_t call_start_us = exec_us;
+            auto result = (*tool_iter)->Call(arguments);
+            const int64_t call_end_us = esp_timer_get_time();
+            ESP_LOGI(TAG, "tools/call done id=%d tool=%s call_time=%lldms total=%lldms",
+                     id,
+                     (*tool_iter)->name().c_str(),
+                     (long long)((call_end_us - call_start_us) / 1000),
+                     (long long)((call_end_us - queued_us) / 1000));
+            ReplyResult(id, result);
         } catch (const std::exception& e) {
             ESP_LOGE(TAG, "tools/call: %s", e.what());
             ReplyError(id, e.what());

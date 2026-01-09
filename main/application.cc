@@ -13,6 +13,8 @@
 #include "wifi_station.h"
 #include "sd_card.h"
 #include "esp32_sd_music.h"
+#include <dirent.h>
+#include <sys/stat.h>
 #include <qrcode.h>
 #include <cmath>
 #include <cstring>
@@ -22,7 +24,89 @@
 #include <arpa/inet.h>
 #include <font_awesome.h>
 #include "features/weather/weather_ui.h"
+#ifdef CONFIG_LUNAR_IDLE_DISPLAY_ENABLE
+#include "features/lunar/lunar_calendar.h"
+#endif
 #define TAG "Application"
+
+namespace {
+
+std::string JoinPath(const char* a, const char* b) {
+    if (a == nullptr || *a == '\0') {
+        return b ? std::string(b) : std::string();
+    }
+    if (b == nullptr || *b == '\0') {
+        return std::string(a);
+    }
+    if (a[strlen(a) - 1] == '/') {
+        if (b[0] == '/') {
+            return std::string(a) + (b + 1);
+        }
+        return std::string(a) + b;
+    }
+    if (b[0] == '/') {
+        return std::string(a) + b;
+    }
+    return std::string(a) + "/" + b;
+}
+
+bool HasSuffixIgnoreCase(const std::string& s, const char* suffix) {
+    if (suffix == nullptr) return false;
+    size_t sl = s.size();
+    size_t sufl = strlen(suffix);
+    if (sufl == 0 || sufl > sl) return false;
+    for (size_t i = 0; i < sufl; i++) {
+        char c1 = static_cast<char>(tolower(static_cast<unsigned char>(s[sl - sufl + i])));
+        char c2 = static_cast<char>(tolower(static_cast<unsigned char>(suffix[i])));
+        if (c1 != c2) return false;
+    }
+    return true;
+}
+
+std::string FindLatestThemePackl(const char* mount_point) {
+    // Expected path on SD: /presets/theme/<name>.packl
+    std::string theme_dir = JoinPath(mount_point, "/presets/theme");
+    DIR* dir = opendir(theme_dir.c_str());
+    if (dir == nullptr) {
+        return {};
+    }
+
+    std::string best_path;
+    time_t best_mtime = 0;
+
+    while (true) {
+        errno = 0;
+        dirent* ent = readdir(dir);
+        if (ent == nullptr) {
+            break;
+        }
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+        std::string name(ent->d_name);
+        if (!HasSuffixIgnoreCase(name, ".packl")) {
+            continue;
+        }
+
+        std::string full_path = JoinPath(theme_dir.c_str(), name.c_str());
+        struct stat st;
+        if (stat(full_path.c_str(), &st) != 0) {
+            continue;
+        }
+        if (!S_ISREG(st.st_mode) || st.st_size <= 0) {
+            continue;
+        }
+        if (best_path.empty() || st.st_mtime > best_mtime) {
+            best_path = full_path;
+            best_mtime = st.st_mtime;
+        }
+    }
+
+    closedir(dir);
+    return best_path;
+}
+
+}  // namespace
 
 
 static const char* const STATE_STRINGS[] = {
@@ -255,6 +339,7 @@ void Application::DismissAlert() {
 }
 
 void Application::ToggleChatState() {
+    ESP_LOGI(TAG, "ToggleChatState called, current state: %s", STATE_STRINGS[device_state_]);
     if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
         return;
@@ -289,8 +374,11 @@ void Application::ToggleChatState() {
             AbortSpeaking(kAbortReasonNone);
         });
     } else if (device_state_ == kDeviceStateListening) {
+        ESP_LOGI(TAG, "Scheduling CloseAudioChannel from listening state");
         Schedule([this]() {
+            ESP_LOGI(TAG, "Executing CloseAudioChannel");
             protocol_->CloseAudioChannel();
+            ESP_LOGI(TAG, "CloseAudioChannel completed");
         });
     }
 }
@@ -408,7 +496,7 @@ void Application::Start() {
     xTaskCreate([](void* arg) {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 1024 * 3 + 512, this, 3, &main_event_loop_task_handle_);
+    }, "main_event_loop", 1024 * 8, this, 3, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -434,6 +522,58 @@ void Application::Start() {
             sd_music_ = new Esp32SdMusic();
             sd_music_->Initialize(sd_card);
             sd_music_->loadTrackList();
+
+            // Theme install from SD (\presets\theme\<name>.packl).
+            // This matches the expected workflow from xiaozhi.vn's converter.
+            auto& assets = Assets::GetInstance();
+            if (assets.partition_valid()) {
+                std::string packl_path = FindLatestThemePackl(sd_card->GetMountPoint());
+                if (!packl_path.empty()) {
+                    struct stat st;
+                    bool have_stat = (stat(packl_path.c_str(), &st) == 0);
+                    std::string signature;
+                    if (have_stat) {
+                        char sigbuf[128];
+                        snprintf(sigbuf, sizeof(sigbuf), "%s|%ld|%ld", packl_path.c_str(),
+                                 static_cast<long>(st.st_size), static_cast<long>(st.st_mtime));
+                        signature = sigbuf;
+                    } else {
+                        signature = packl_path;
+                    }
+
+                    Settings settings("assets", true);
+                    std::string last_sig = settings.GetString("sd_theme_sig");
+                    if (last_sig != signature) {
+                        ESP_LOGI(TAG, "Found SD theme pack: %s", packl_path.c_str());
+                        display->SetChatMessage("system", "Installing theme from SD...");
+                        SetDeviceState(kDeviceStateUpgrading);
+                        board.SetPowerSaveMode(false);
+
+                        bool ok = assets.InstallFromFile(packl_path, [display](int progress, size_t speed) {
+                            std::thread([display, progress, speed]() {
+                                char buffer[32];
+                                snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, static_cast<unsigned>(speed / 1024));
+                                display->SetChatMessage("system", buffer);
+                            }).detach();
+                        });
+
+                        board.SetPowerSaveMode(true);
+                        vTaskDelay(pdMS_TO_TICKS(300));
+
+                        if (ok) {
+                            assets.Apply();
+                            settings.SetString("sd_theme_sig", signature);
+                            display->SetChatMessage("system", "Theme updated from SD");
+                            ESP_LOGI(TAG, "Applied SD theme successfully");
+                        } else {
+                            ESP_LOGW(TAG, "Failed to install SD theme pack");
+                            display->SetChatMessage("system", "SD theme install failed");
+                        }
+                    } else {
+                        ESP_LOGI(TAG, "SD theme pack unchanged, skipping");
+                    }
+                }
+            }
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
@@ -491,7 +631,13 @@ void Application::Start() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (device_state_ == kDeviceStateSpeaking) {
+        // Audio frames can arrive before the scheduled state transition to Speaking.
+        // Accept frames as soon as we know a TTS stream is active to avoid race drops.
+        if (device_state_ == kDeviceStateSpeaking || tts_stream_active_.load(std::memory_order_relaxed)) {
+            if (!tts_audio_received_.exchange(true, std::memory_order_relaxed)) {
+                ESP_LOGI(TAG, "TTS audio first packet: %u bytes (sr=%d dur=%d)",
+                    static_cast<unsigned>(packet->payload.size()), packet->sample_rate, packet->frame_duration);
+            }
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -503,8 +649,12 @@ void Application::Start() {
         }
     });
     protocol_->OnAudioChannelClosed([this, &board]() {
+        ESP_LOGI(TAG, "OnAudioChannelClosed callback triggered");
+        tts_stream_active_.store(false, std::memory_order_relaxed);
+        tts_audio_received_.store(false, std::memory_order_relaxed);
         board.SetPowerSaveMode(true);
         Schedule([this]() {
+            ESP_LOGI(TAG, "Setting state to idle after channel closed");
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -516,6 +666,12 @@ void Application::Start() {
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
+                // Mark stream active immediately so incoming audio isn't dropped before the
+                // scheduled transition to Speaking runs.
+                tts_stream_active_.store(true, std::memory_order_relaxed);
+                tts_audio_received_.store(false, std::memory_order_relaxed);
+                audio_service_.ResetDecoder();
+                ESP_LOGI(TAG, "TTS start: reset decoder, accepting audio");
                 Schedule([this]() {
                     aborted_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
@@ -523,6 +679,7 @@ void Application::Start() {
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
+                tts_stream_active_.store(false, std::memory_order_relaxed);
                 Schedule([this]() {
                     if (device_state_ == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
@@ -672,6 +829,10 @@ void Application::MainEventLoop() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+
+            if (protocol_) {
+                protocol_->OnClockTick();
+            }
         
             // Print the debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -701,7 +862,7 @@ void Application::MainEventLoop() {
                                 app->UpdateIdleDisplay();
                             }
                             vTaskDelete(NULL);
-                        }, "weather_task", 1024 * 4, this, 5, NULL);
+                        }, "weather_task", 1024 * 8, this, 5, NULL);
                     }
                 }
             }
@@ -827,13 +988,12 @@ void Application::SetDeviceState(DeviceState state) {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
 
-            // Make sure the audio processor is running
-            if (!audio_service_.IsAudioProcessorRunning()) {
-                // Send the start listening command
-                protocol_->SendStartListening(listening_mode_);
-                audio_service_.EnableVoiceProcessing(true);
-                audio_service_.EnableWakeWordDetection(false);
-            }
+            // Always notify the server when entering listening state.
+            // The audio processor may already be running from a previous session; in that case
+            // we still need to (re)enable voice processing and send the listen/start command.
+            protocol_->SendStartListening(listening_mode_);
+            audio_service_.EnableVoiceProcessing(true);
+            audio_service_.EnableWakeWordDetection(false);
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
@@ -843,7 +1003,11 @@ void Application::SetDeviceState(DeviceState state) {
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
-            audio_service_.ResetDecoder();
+            // Decoder reset is done on TTS start (before audio arrives) to avoid
+            // clearing already-queued packets during the state transition.
+            if (!tts_stream_active_.load(std::memory_order_relaxed)) {
+                audio_service_.ResetDecoder();
+            }
             break;
         default:
             // Do nothing
@@ -1129,33 +1293,96 @@ void Application::UpdateIdleDisplay() {
         card.day_text = buffer;
     }
 
-    // Weather data
-    if (weather_info.valid) {
-        card.city = weather_info.city;
-        
-        char temp_buf[16];
-        snprintf(temp_buf, sizeof(temp_buf), "%d°C", (int)round(weather_info.temp));
-        card.temperature_text = temp_buf;
+    bool show_weather = true;
+#ifdef CONFIG_LUNAR_IDLE_DISPLAY_ENABLE
+    // Rotate Weather <-> Lunar every 30 seconds while idle.
+    // If weather is not available, keep Lunar as fallback.
+    static bool s_show_weather = true;
+    static uint32_t s_last_switch_tick = 0;
+    constexpr uint32_t kIdleCardSwitchIntervalSeconds = 30;
 
-        card.description_text = weather_info.description;
-        card.humidity_text = std::to_string(weather_info.humidity) + "%";
-
-        char extra_buf[32];
-        snprintf(extra_buf, sizeof(extra_buf), "Cảm giác như: %d°C", (int)round(weather_info.feels_like));
-        card.feels_like_text = extra_buf;
-        
-        snprintf(extra_buf, sizeof(extra_buf), "Gió: %.1f m/s", weather_info.wind_speed);
-        card.wind_text = extra_buf;
-        
-        snprintf(extra_buf, sizeof(extra_buf), "Áp suất: %d hPa", weather_info.pressure);
-        card.pressure_text = extra_buf;
-
-        card.icon = WeatherUI::GetWeatherIcon(weather_info.icon_code);
-    } else {
-        card.city = "Connecting...";
-        card.temperature_text = "--";
-        card.icon = FONT_AWESOME_WIFI;
+    if (clock_ticks_ <= 1) {
+        s_show_weather = true;
+        s_last_switch_tick = 0;
     }
+
+    if (!weather_info.valid) {
+        show_weather = false;
+    } else {
+        if (s_last_switch_tick == 0) {
+            s_last_switch_tick = clock_ticks_;
+        }
+        if (clock_ticks_ - s_last_switch_tick >= kIdleCardSwitchIntervalSeconds) {
+            s_show_weather = !s_show_weather;
+            s_last_switch_tick = clock_ticks_;
+        }
+        show_weather = s_show_weather;
+    }
+#endif
+
+    if (show_weather) {
+        // Weather data
+        if (weather_info.valid) {
+            card.city = weather_info.city;
+
+            char temp_buf[16];
+            snprintf(temp_buf, sizeof(temp_buf), "%d°C", (int)round(weather_info.temp));
+            card.temperature_text = temp_buf;
+
+            card.description_text = weather_info.description;
+            card.humidity_text = std::to_string(weather_info.humidity) + "%";
+
+            char extra_buf[32];
+            snprintf(extra_buf, sizeof(extra_buf), "Cảm giác như: %d°C", (int)round(weather_info.feels_like));
+            card.feels_like_text = extra_buf;
+
+            snprintf(extra_buf, sizeof(extra_buf), "Gió: %.1f m/s", weather_info.wind_speed);
+            card.wind_text = extra_buf;
+
+            snprintf(extra_buf, sizeof(extra_buf), "Áp suất: %d hPa", weather_info.pressure);
+            card.pressure_text = extra_buf;
+
+            card.icon = WeatherUI::GetWeatherIcon(weather_info.icon_code);
+        } else {
+            card.city = "Connecting...";
+            card.temperature_text = "--";
+            card.icon = FONT_AWESOME_WIFI;
+        }
+    }
+
+#ifdef CONFIG_LUNAR_IDLE_DISPLAY_ENABLE
+    if (!show_weather) {
+        SolarDate solar_date{tm_buf.tm_mday, tm_buf.tm_mon + 1, tm_buf.tm_year + 1900};
+        LunarDate lunar = solar_to_lunar(solar_date);
+
+        card.city = "Âm lịch";
+        card.icon = FONT_AWESOME_CALENDAR;
+
+        char lunar_buf[24];
+        if (lunar.is_leap_month) {
+            snprintf(lunar_buf, sizeof(lunar_buf), "%02d/%02dN", lunar.day, lunar.month);
+        } else {
+            snprintf(lunar_buf, sizeof(lunar_buf), "%02d/%02d", lunar.day, lunar.month);
+        }
+        card.temperature_text = lunar_buf;
+
+        char lunar_date_line[40];
+        snprintf(lunar_date_line, sizeof(lunar_date_line), "Âm: %02d/%02d/%d", lunar.day, lunar.month, lunar.year);
+        card.date_text = lunar_date_line;
+
+        // Put Can–Chi in the scrolling detail line
+        std::string canchi_day = can_chi_day(solar_date);
+        std::string canchi_month = can_chi_month(lunar.year, lunar.month);
+        std::string canchi_year = can_chi_year(lunar.year);
+        card.description_text = std::string("Ngày ") + canchi_day +
+                                " | Tháng " + canchi_month +
+                                " | Năm " + canchi_year;
+        card.humidity_text.clear();
+        card.feels_like_text.clear();
+        card.wind_text.clear();
+        card.pressure_text.clear();
+    }
+#endif
 
     auto display = Board::GetInstance().GetDisplay();
     display->ShowIdleCard(card);

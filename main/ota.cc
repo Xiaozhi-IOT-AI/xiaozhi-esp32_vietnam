@@ -79,7 +79,7 @@ Header for check version request:
     Accept-Language     : vi-VN
     Content-Type        : application/json
 
-Check version URL: https://api.tenclass.net/xiaozhi/ota/
+Check version URL: https://xiaozhi-ai-iot.vn/api/v1/ota
 Method: POST
 Body for check version request data:
 
@@ -178,7 +178,7 @@ Server response:
         "subscribe_topic": "null"
     },
     "websocket": {
-        "url": "wss://api.tenclass.net/xiaozhi/v1/",
+        "url": "wss://xiaozhi-ai-iot.vn/api/v1/",
         "token": "test-token"
     },
     "server_time": {

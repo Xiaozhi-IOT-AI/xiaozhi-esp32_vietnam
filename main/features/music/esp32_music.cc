@@ -376,6 +376,9 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
                     display->SetMusicInfo(buf);
                     ESP_LOGI(TAG, "[PATCH] Early SetMusicInfo: %s", buf);
                 }
+            } else {
+                ESP_LOGI(TAG, "Spectrum UI is not active (display_mode=%s). Use tool self.music.set_display_mode {mode:spectrum} to enable sóng nhạc.",
+                         (display_mode_ == DISPLAY_MODE_LYRICS) ? "LYRICS" : "UNKNOWN");
             }
         
             if (cJSON_IsString(title)) {
@@ -1110,6 +1113,9 @@ void Esp32Music::PlayAudioStream() {
 
                         // Push PCM data to FFT buffer
                         display->FeedAudioDataFFT(final_pcm_data, pcm_size_bytes);
+                    } else {
+                        // If spectrum is expected but not shown, this is the first thing to verify.
+                        ESP_LOGD(TAG, "Skipping FFT feed because display_mode != SPECTRUM");
                     }
                 }
 

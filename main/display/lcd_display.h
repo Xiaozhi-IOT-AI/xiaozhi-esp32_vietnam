@@ -61,6 +61,7 @@ protected:
     void periodicUpdateTask();
     static void periodicUpdateTaskWrapper(void* arg);
     int16_t* final_pcm_data_fft = nullptr;
+    size_t final_pcm_data_fft_size_bytes_ = 0;
     int16_t* audio_data_ = nullptr;
     int16_t* frame_audio_data = nullptr;
     uint32_t last_fft_update = 0;

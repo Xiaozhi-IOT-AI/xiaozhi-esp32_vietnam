@@ -6,6 +6,9 @@
 #include "emote_display.h"
 
 #include <esp_log.h>
+#include <sys/stat.h>
+
+#include <cstdio>
 #include <spi_flash_mmap.h>
 #include <esp_timer.h>
 #include <cbin_font.h>
@@ -492,6 +495,135 @@ bool Assets::Download(std::string url, std::function<void(int progress, size_t s
              total_written, current_sector);
 
     // 重新初始化资源分区
+    if (!InitializePartition()) {
+        ESP_LOGE(TAG, "Failed to re-initialize assets partition");
+        return false;
+    }
+
+    return true;
+}
+
+bool Assets::InstallFromFile(const std::string& path, std::function<void(int progress, size_t speed)> progress_callback) {
+    ESP_LOGI(TAG, "Installing assets from file %s", path.c_str());
+
+    if (partition_ == nullptr) {
+        ESP_LOGE(TAG, "Assets partition is not initialized");
+        return false;
+    }
+
+    // Unmap current assets partition mapping.
+    if (mmap_handle_ != 0) {
+        esp_partition_munmap(mmap_handle_);
+        mmap_handle_ = 0;
+        mmap_root_ = nullptr;
+    }
+    checksum_valid_ = false;
+    assets_.clear();
+
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        ESP_LOGE(TAG, "Failed to stat file: %s", path.c_str());
+        return false;
+    }
+    if (st.st_size <= 0) {
+        ESP_LOGE(TAG, "Invalid file size: %ld", static_cast<long>(st.st_size));
+        return false;
+    }
+
+    size_t content_length = static_cast<size_t>(st.st_size);
+    if (content_length > partition_->size) {
+        ESP_LOGE(TAG, "Assets file size (%u) is larger than partition size (%lu)",
+                 static_cast<unsigned>(content_length), partition_->size);
+        return false;
+    }
+
+    FILE* f = fopen(path.c_str(), "rb");
+    if (f == nullptr) {
+        ESP_LOGE(TAG, "Failed to open file: %s", path.c_str());
+        return false;
+    }
+
+    const size_t SECTOR_SIZE = esp_partition_get_main_flash_sector_size();
+    ESP_LOGI(TAG, "Sector size: %u, content length: %u", SECTOR_SIZE, static_cast<unsigned>(content_length));
+
+    std::array<uint8_t, 512> buffer;
+    size_t total_written = 0;
+    size_t recent_written = 0;
+    size_t current_sector = 0;
+    auto last_calc_time = esp_timer_get_time();
+
+    while (total_written < content_length) {
+        size_t remaining = content_length - total_written;
+        size_t to_read = remaining > buffer.size() ? buffer.size() : remaining;
+        size_t read_bytes = fread(buffer.data(), 1, to_read, f);
+        if (read_bytes == 0) {
+            if (feof(f)) {
+                break;
+            }
+            ESP_LOGE(TAG, "Failed to read file data (ferror=%d)", ferror(f));
+            fclose(f);
+            return false;
+        }
+
+        size_t write_end_offset = total_written + read_bytes;
+        size_t needed_sectors = (write_end_offset + SECTOR_SIZE - 1) / SECTOR_SIZE;
+
+        while (current_sector < needed_sectors) {
+            size_t sector_start = current_sector * SECTOR_SIZE;
+            size_t sector_end = (current_sector + 1) * SECTOR_SIZE;
+            if (sector_end > partition_->size) {
+                ESP_LOGE(TAG, "Sector end (%u) exceeds partition size (%lu)",
+                         static_cast<unsigned>(sector_end), partition_->size);
+                fclose(f);
+                return false;
+            }
+            esp_err_t err = esp_partition_erase_range(partition_, sector_start, SECTOR_SIZE);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to erase sector %u at offset %u: %s",
+                         static_cast<unsigned>(current_sector), static_cast<unsigned>(sector_start), esp_err_to_name(err));
+                fclose(f);
+                return false;
+            }
+            current_sector++;
+        }
+
+        esp_err_t err = esp_partition_write(partition_, total_written, buffer.data(), read_bytes);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to write to assets partition at offset %u: %s",
+                     static_cast<unsigned>(total_written), esp_err_to_name(err));
+            fclose(f);
+            return false;
+        }
+
+        total_written += read_bytes;
+        recent_written += read_bytes;
+
+        if (esp_timer_get_time() - last_calc_time >= 1000000 || total_written == content_length) {
+            size_t progress = total_written * 100 / content_length;
+            size_t speed = recent_written;
+            ESP_LOGI(TAG, "Progress: %u%% (%u/%u), Speed: %u B/s, Sectors erased: %u",
+                     static_cast<unsigned>(progress), static_cast<unsigned>(total_written),
+                     static_cast<unsigned>(content_length), static_cast<unsigned>(speed),
+                     static_cast<unsigned>(current_sector));
+            if (progress_callback) {
+                progress_callback(static_cast<int>(progress), speed);
+            }
+            last_calc_time = esp_timer_get_time();
+            recent_written = 0;
+        }
+    }
+
+    fclose(f);
+
+    if (total_written != content_length) {
+        ESP_LOGE(TAG, "Installed size (%u) does not match expected size (%u)",
+                 static_cast<unsigned>(total_written), static_cast<unsigned>(content_length));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Assets install completed, total written: %u bytes, total sectors erased: %u",
+             static_cast<unsigned>(total_written), static_cast<unsigned>(current_sector));
+
     if (!InitializePartition()) {
         ESP_LOGE(TAG, "Failed to re-initialize assets partition");
         return false;

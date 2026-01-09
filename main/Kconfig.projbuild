@@ -2,7 +2,7 @@ menu "Xiaozhi Assistant"
 
 config OTA_URL
     string "Default OTA URL"
-    default "https://api.tenclass.net/xiaozhi/ota/"
+    default "https://xiaozhi-ai-iot.vn/api/v1/ota"
     help
         The application will access this URL to check for new firmwares and server address.
 
@@ -579,6 +579,12 @@ config WEATHER_IDLE_DISPLAY_ENABLE
     default n
     help
         Enable Weather Feature support
+
+config LUNAR_IDLE_DISPLAY_ENABLE
+    bool "Enable Lunar Calendar (Idle Display)"
+    default n
+    help
+        Show Vietnamese lunar calendar information on the LCD idle screen.
 
 choice DISPLAY_ESP32S3_KORVO2_V3
     depends on BOARD_TYPE_ESP_KORVO2_V3

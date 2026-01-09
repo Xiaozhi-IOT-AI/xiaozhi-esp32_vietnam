@@ -3,8 +3,10 @@
 #include "application.h"
 #include "display.h"
 #include "assets/lang_config.h"
+#include "settings.h"
 
 #include <esp_log.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <font_awesome.h>
 #include <opus_encoder.h>
@@ -47,14 +49,29 @@ void Ml307Board::StartNetwork() {
 
     // Wait for network ready
     display->SetStatus(Lang::Strings::REGISTERING_NETWORK);
+    constexpr int kMaxRegistrationErrorsBeforeWifiFallback = 3;
+    int registration_error_count = 0;
     while (true) {
         auto result = modem_->WaitForNetworkReady();
         if (result == NetworkStatus::ErrorInsertPin) {
             application.Alert(Lang::Strings::ERROR, Lang::Strings::PIN_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_PIN);
+            registration_error_count++;
         } else if (result == NetworkStatus::ErrorRegistrationDenied) {
             application.Alert(Lang::Strings::ERROR, Lang::Strings::REG_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_REG);
+            registration_error_count++;
         } else {
             break;
+        }
+
+        if (registration_error_count >= kMaxRegistrationErrorsBeforeWifiFallback) {
+            ESP_LOGW(TAG, "ML307 network not available (SIM/registration error). Switching to WiFi...");
+            {
+                Settings settings("network", true);
+                settings.SetInt("type", 0);  // 0 = WIFI, 1 = ML307
+            }
+            display->ShowNotification(Lang::Strings::SWITCH_TO_WIFI_NETWORK);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_restart();
         }
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
