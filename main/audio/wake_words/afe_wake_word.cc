@@ -2,6 +2,7 @@
 #include "audio_service.h"
 
 #include <esp_log.h>
+#include <algorithm>
 #include <sstream>
 
 #define DETECTION_RUNNING_EVENT 1
@@ -40,6 +41,8 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     codec_ = codec;
     int ref_num = codec_->input_reference() ? 1 : 0;
 
+    constexpr const char* kFixedWakeWord = "alexa";
+
     if (models_list == nullptr) {
         models_ = esp_srmodel_init("model");
     } else {
@@ -62,6 +65,33 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
                 wake_words_.push_back(word);
             }
         }
+    }
+
+    // Enforce fixed wake word: only accept "alexa" (case-insensitive).
+    // If the flashed model doesn't contain it, we fail initialization so the device won't
+    // unexpectedly wake on a different keyword.
+    {
+        auto to_lower_ascii = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return s;
+        };
+
+        const std::string desired = to_lower_ascii(std::string(kFixedWakeWord));
+        std::vector<std::string> filtered;
+        filtered.reserve(wake_words_.size());
+        for (const auto& w : wake_words_) {
+            if (to_lower_ascii(w) == desired) {
+                filtered.push_back(w);
+            }
+        }
+        wake_words_.swap(filtered);
+        if (wake_words_.empty()) {
+            ESP_LOGE(TAG, "Fixed wake word '%s' not found in model wake words; please flash an assets/model that includes it", kFixedWakeWord);
+            return false;
+        }
+        ESP_LOGI(TAG, "Fixed wake word enabled: %s", wake_words_[0].c_str());
     }
 
     std::string input_format;
@@ -138,7 +168,14 @@ void AfeWakeWord::AudioDetectionTask() {
 
         if (res->wakeup_state == WAKENET_DETECTED) {
             Stop();
-            last_detected_wake_word_ = wake_words_[res->wakenet_model_index - 1];
+
+            // With fixed wake word mode, only one wake word is permitted.
+            // Still guard the index in case the underlying model reports unexpected values.
+            if (!wake_words_.empty()) {
+                last_detected_wake_word_ = wake_words_[0];
+            } else {
+                last_detected_wake_word_.clear();
+            }
 
             if (wake_word_detected_callback_) {
                 wake_word_detected_callback_(last_detected_wake_word_);

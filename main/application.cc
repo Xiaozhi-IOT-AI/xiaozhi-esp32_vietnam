@@ -242,8 +242,6 @@ void Application::CheckNewVersion(Ota& ota) {
             retry_delay *= 2; // The delay time doubles after each retry.
             continue;
         }
-        
-        ota.CheckVersion(std::string() = "");
 
         retry_count = 0;
         retry_delay = 10; // Reset retry delay time

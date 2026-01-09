@@ -14,6 +14,12 @@
 
 #define TAG "Display"
 
+namespace {
+inline const char* SafeStr(const char* s) {
+    return s ? s : "";
+}
+}  // namespace
+
 Display::Display() {
 }
 
@@ -21,7 +27,7 @@ Display::~Display() {
 }
 
 void Display::SetStatus(const char* status) {
-    ESP_LOGW(TAG, "SetStatus: %s", status);
+    ESP_LOGW(TAG, "SetStatus: %s", SafeStr(status));
 }
 
 void Display::ShowNotification(const std::string &notification, int duration_ms) {
@@ -29,7 +35,7 @@ void Display::ShowNotification(const std::string &notification, int duration_ms)
 }
 
 void Display::ShowNotification(const char* notification, int duration_ms) {
-    ESP_LOGW(TAG, "ShowNotification: %s", notification);
+    ESP_LOGW(TAG, "ShowNotification: %s", SafeStr(notification));
 }
 
 void Display::UpdateStatusBar(bool update_all) {
@@ -37,16 +43,16 @@ void Display::UpdateStatusBar(bool update_all) {
 
 
 void Display::SetEmotion(const char* emotion) {
-    ESP_LOGW(TAG, "SetEmotion: %s", emotion);
+    ESP_LOGW(TAG, "SetEmotion: %s", SafeStr(emotion));
 }
 
 void Display::SetChatMessage(const char* role, const char* content) {
-    ESP_LOGW(TAG, "Role:%s", role);
-    ESP_LOGW(TAG, "     %s", content);
+    ESP_LOGW(TAG, "Role:%s", SafeStr(role));
+    ESP_LOGW(TAG, "     %s", SafeStr(content));
 }
 
 void Display::SetMusicInfo(const char* song_name) {
-    ESP_LOGW(TAG, "SetMusicInfo: %s", song_name);
+    ESP_LOGW(TAG, "SetMusicInfo: %s", SafeStr(song_name));
 }
 
 void Display::SetTheme(Theme* theme) {

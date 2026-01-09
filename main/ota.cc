@@ -339,7 +339,7 @@ bool Ota::CheckVersion(std::string& url) {
 
     has_new_version_ = false;
     cJSON *firmware = cJSON_GetObjectItem(root, "firmware");
-    if (url != CONFIG_OTA_URL && cJSON_IsObject(firmware)) {
+    if (cJSON_IsObject(firmware)) {
         cJSON *version = cJSON_GetObjectItem(firmware, "version");
         if (cJSON_IsString(version)) {
             firmware_version_ = version->valuestring;
@@ -380,7 +380,9 @@ bool Ota::CheckVersion(std::string& url) {
         // has_new_version_ = true;
 
     } else {
-        ESP_LOGW(TAG, "No firmware section found!");
+        // Many deployments use the OTA endpoint purely for transport/session configuration.
+        // Missing firmware info should be treated as a normal case (no update metadata).
+        ESP_LOGI(TAG, "No firmware section found");
     }
 
     cJSON_Delete(root);

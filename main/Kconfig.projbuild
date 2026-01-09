@@ -576,12 +576,14 @@ endchoice
 
 config WEATHER_IDLE_DISPLAY_ENABLE
     bool "Enable Weather Feature (Idle Display for LCD)"
+    depends on !BOARD_TYPE_BREAD_COMPACT_ML307
     default n
     help
         Enable Weather Feature support
 
 config LUNAR_IDLE_DISPLAY_ENABLE
     bool "Enable Lunar Calendar (Idle Display)"
+    depends on !BOARD_TYPE_BREAD_COMPACT_ML307
     default n
     help
         Show Vietnamese lunar calendar information on the LCD idle screen.
