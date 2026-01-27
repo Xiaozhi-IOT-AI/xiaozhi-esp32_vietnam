@@ -182,12 +182,12 @@ void TouchGestureController::HandleSwipeRight(int16_t x, int16_t y) {
             }
             break;
             
-        case SCREEN_MODE_CLOCK:
-            // Switch back to idle mode
+        case SCREEN_MODE_IDLE:
+            // Switch to clock mode from idle
             if (analog_clock_) {
-                analog_clock_->Hide();
+                analog_clock_->Show();
             }
-            SetScreenMode(SCREEN_MODE_IDLE);
+            SetScreenMode(SCREEN_MODE_CLOCK);
             break;
             
         default:
