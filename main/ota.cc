@@ -201,16 +201,14 @@ bool Ota::CheckVersion(std::string& url) {
 
     if (url.length() == 0) {
         url = GetCheckVersionUrl();
-        if (url == CONFIG_OTA_URL) {
-            ESP_LOGI(TAG, "Check version URL is using default: %s - canceling check", url.c_str());
-            return true;
-        }
     }
 
     if (url.length() < 10) {
         ESP_LOGE(TAG, "Check version URL is not properly set");
         return false;
     }
+    
+    ESP_LOGI(TAG, "Check version URL: %s", url.c_str());
 
     auto http = SetupHttp();
 
@@ -339,7 +337,7 @@ bool Ota::CheckVersion(std::string& url) {
 
     has_new_version_ = false;
     cJSON *firmware = cJSON_GetObjectItem(root, "firmware");
-    if (url != CONFIG_OTA_URL && cJSON_IsObject(firmware)) {
+    if (cJSON_IsObject(firmware)) {
         cJSON *version = cJSON_GetObjectItem(firmware, "version");
         if (cJSON_IsString(version)) {
             firmware_version_ = version->valuestring;
@@ -374,10 +372,6 @@ bool Ota::CheckVersion(std::string& url) {
                 has_new_version_ = false;
             }
         }
-        // For testing purposes
-        // firmware_version_ = "2.0.4";
-        // firmware_url_ = "https://cdn.jsdelivr.net/gh/TienHuyIoT/esp_web_flasher@master/ota_bin/xingzhi-cube-1.54tft-wifi.bin";
-        // has_new_version_ = true;
 
     } else {
         ESP_LOGW(TAG, "No firmware section found!");
