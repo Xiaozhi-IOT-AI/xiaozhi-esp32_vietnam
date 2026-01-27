@@ -23,6 +23,10 @@ AgentSelector::~AgentSelector() {
 void AgentSelector::CreateUI() {
     // Create selector container (full screen)
     selector_root_ = lv_obj_create(parent_);
+    if (!selector_root_) {
+        ESP_LOGE(TAG, "Failed to create selector root object");
+        return;
+    }
     lv_obj_set_size(selector_root_, width_, height_);
     lv_obj_set_pos(selector_root_, 0, 0);
     lv_obj_set_style_bg_color(selector_root_, lv_color_hex(0x1A1A2E), 0);
@@ -34,33 +38,43 @@ void AgentSelector::CreateUI() {
     
     // Title
     title_label_ = lv_label_create(selector_root_);
-    lv_label_set_text(title_label_, "Chọn Trợ Lý");
-    lv_obj_set_style_text_font(title_label_, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(title_label_, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(title_label_, LV_ALIGN_TOP_MID, 0, 10);
+    if (title_label_) {
+        lv_label_set_text(title_label_, "Chọn Trợ Lý");
+        lv_obj_set_style_text_font(title_label_, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(title_label_, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_align(title_label_, LV_ALIGN_TOP_MID, 0, 10);
+    }
     
     // Back button
     back_btn_ = lv_btn_create(selector_root_);
-    lv_obj_set_size(back_btn_, 50, 30);
-    lv_obj_align(back_btn_, LV_ALIGN_TOP_LEFT, 0, 5);
-    lv_obj_set_style_bg_color(back_btn_, lv_color_hex(0x3D5A80), 0);
-    lv_obj_set_style_radius(back_btn_, 5, 0);
-    lv_obj_add_event_cb(back_btn_, OnBackClick, LV_EVENT_CLICKED, this);
-    
-    lv_obj_t* back_label = lv_label_create(back_btn_);
-    lv_label_set_text(back_label, LV_SYMBOL_LEFT);
-    lv_obj_center(back_label);
+    if (back_btn_) {
+        lv_obj_set_size(back_btn_, 50, 30);
+        lv_obj_align(back_btn_, LV_ALIGN_TOP_LEFT, 0, 5);
+        lv_obj_set_style_bg_color(back_btn_, lv_color_hex(0x3D5A80), 0);
+        lv_obj_set_style_radius(back_btn_, 5, 0);
+        lv_obj_add_event_cb(back_btn_, OnBackClick, LV_EVENT_CLICKED, this);
+        
+        lv_obj_t* back_label = lv_label_create(back_btn_);
+        if (back_label) {
+            lv_label_set_text(back_label, LV_SYMBOL_LEFT);
+            lv_obj_center(back_label);
+        }
+    }
     
     // List container (scrollable)
     list_container_ = lv_obj_create(selector_root_);
-    lv_obj_set_size(list_container_, width_ - 20, height_ - 70);
-    lv_obj_align(list_container_, LV_ALIGN_BOTTOM_MID, 0, -10);
-    lv_obj_set_style_bg_opa(list_container_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(list_container_, 0, 0);
-    lv_obj_set_style_pad_all(list_container_, 5, 0);
-    lv_obj_set_flex_flow(list_container_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(list_container_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_scroll_dir(list_container_, LV_DIR_VER);
+    if (list_container_) {
+        lv_obj_set_size(list_container_, width_ - 20, height_ - 70);
+        lv_obj_align(list_container_, LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_set_style_bg_opa(list_container_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(list_container_, 0, 0);
+        lv_obj_set_style_pad_all(list_container_, 5, 0);
+        lv_obj_set_flex_flow(list_container_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(list_container_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_scroll_dir(list_container_, LV_DIR_VER);
+    } else {
+        ESP_LOGE(TAG, "Failed to create list container");
+    }
     
     ESP_LOGI(TAG, "Agent selector UI created");
 }
@@ -210,21 +224,25 @@ bool AgentSelector::ParseAgentsJson(const char* json_str) {
         cJSON* id = cJSON_GetObjectItem(agent_obj, "id");
         if (cJSON_IsString(id)) {
             strncpy(agent->id, id->valuestring, sizeof(agent->id) - 1);
+            agent->id[sizeof(agent->id) - 1] = '\0';
         }
         
         cJSON* name = cJSON_GetObjectItem(agent_obj, "name");
         if (cJSON_IsString(name)) {
             strncpy(agent->name, name->valuestring, sizeof(agent->name) - 1);
+            agent->name[sizeof(agent->name) - 1] = '\0';
         }
         
         cJSON* desc = cJSON_GetObjectItem(agent_obj, "description");
         if (cJSON_IsString(desc)) {
             strncpy(agent->description, desc->valuestring, sizeof(agent->description) - 1);
+            agent->description[sizeof(agent->description) - 1] = '\0';
         }
         
         cJSON* icon = cJSON_GetObjectItem(agent_obj, "icon_url");
         if (cJSON_IsString(icon)) {
             strncpy(agent->icon_url, icon->valuestring, sizeof(agent->icon_url) - 1);
+            agent->icon_url[sizeof(agent->icon_url) - 1] = '\0';
         }
         
         cJSON* active = cJSON_GetObjectItem(agent_obj, "is_active");

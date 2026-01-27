@@ -31,11 +31,13 @@ bool ThemeManager::ParseThemeJson(cJSON* theme) {
     cJSON* id = cJSON_GetObjectItem(theme, "id");
     if (cJSON_IsString(id)) {
         strncpy(current_theme_.id, id->valuestring, sizeof(current_theme_.id) - 1);
+        current_theme_.id[sizeof(current_theme_.id) - 1] = '\0';  // Ensure null termination
     }
     
     cJSON* name = cJSON_GetObjectItem(theme, "name");
     if (cJSON_IsString(name)) {
         strncpy(current_theme_.name, name->valuestring, sizeof(current_theme_.name) - 1);
+        current_theme_.name[sizeof(current_theme_.name) - 1] = '\0';  // Ensure null termination
     }
     
     // Parse colors
@@ -110,6 +112,7 @@ bool ThemeManager::ParseThemeJson(cJSON* theme) {
             current_theme_.clock.use_background_image = true;
             strncpy(current_theme_.clock.background_image_url, bg_img->valuestring,
                     sizeof(current_theme_.clock.background_image_url) - 1);
+            current_theme_.clock.background_image_url[sizeof(current_theme_.clock.background_image_url) - 1] = '\0';
         }
         
         cJSON* show_nums = cJSON_GetObjectItem(clock, "show_numbers");
@@ -166,6 +169,7 @@ bool ThemeManager::ParseThemeJson(cJSON* theme) {
         if (cJSON_IsString(bg_url)) {
             strncpy(current_theme_.idle_background_url, bg_url->valuestring,
                     sizeof(current_theme_.idle_background_url) - 1);
+            current_theme_.idle_background_url[sizeof(current_theme_.idle_background_url) - 1] = '\0';
         }
     }
     
@@ -214,10 +218,12 @@ bool ThemeManager::LoadTheme() {
     }
     
     strncpy(current_theme_.id, id.c_str(), sizeof(current_theme_.id) - 1);
+    current_theme_.id[sizeof(current_theme_.id) - 1] = '\0';
     
     std::string name = settings.GetString("name");
     if (!name.empty()) {
         strncpy(current_theme_.name, name.c_str(), sizeof(current_theme_.name) - 1);
+        current_theme_.name[sizeof(current_theme_.name) - 1] = '\0';
     }
     
     // Load clock colors

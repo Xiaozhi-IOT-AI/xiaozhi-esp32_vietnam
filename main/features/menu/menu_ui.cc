@@ -28,6 +28,10 @@ MenuUI::~MenuUI() {
 void MenuUI::CreateUI() {
     // Create menu container (full screen)
     menu_root_ = lv_obj_create(parent_);
+    if (!menu_root_) {
+        ESP_LOGE(TAG, "Failed to create menu root object");
+        return;
+    }
     lv_obj_set_size(menu_root_, width_, height_);
     lv_obj_set_pos(menu_root_, 0, 0);
     lv_obj_set_style_bg_color(menu_root_, lv_color_hex(0x1A1A2E), 0);
@@ -60,6 +64,10 @@ void MenuUI::CreateUI() {
         
         // Button container
         buttons_[i] = lv_obj_create(menu_root_);
+        if (!buttons_[i]) {
+            ESP_LOGE(TAG, "Failed to create button %d", i);
+            continue;
+        }
         lv_obj_set_size(buttons_[i], btn_width, btn_height);
         lv_obj_set_pos(buttons_[i], x, y);
         lv_obj_set_style_radius(buttons_[i], btn_radius, 0);
@@ -88,16 +96,20 @@ void MenuUI::CreateUI() {
         
         // Icon label
         icons_[i] = lv_label_create(buttons_[i]);
-        lv_label_set_text(icons_[i], default_items_[i].icon);
-        lv_obj_set_style_text_font(icons_[i], &lv_font_montserrat_28, 0);
-        lv_obj_set_style_text_color(icons_[i], lv_color_hex(menu_theme.text_color), 0);
+        if (icons_[i]) {
+            lv_label_set_text(icons_[i], default_items_[i].icon);
+            lv_obj_set_style_text_font(icons_[i], &lv_font_montserrat_28, 0);
+            lv_obj_set_style_text_color(icons_[i], lv_color_hex(menu_theme.text_color), 0);
+        }
         
         // Text label
         labels_[i] = lv_label_create(buttons_[i]);
-        lv_label_set_text(labels_[i], default_items_[i].name);
-        lv_obj_set_style_text_font(labels_[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(labels_[i], lv_color_hex(menu_theme.text_color), 0);
-        lv_obj_set_style_text_align(labels_[i], LV_TEXT_ALIGN_CENTER, 0);
+        if (labels_[i]) {
+            lv_label_set_text(labels_[i], default_items_[i].name);
+            lv_obj_set_style_text_font(labels_[i], &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(labels_[i], lv_color_hex(menu_theme.text_color), 0);
+            lv_obj_set_style_text_align(labels_[i], LV_TEXT_ALIGN_CENTER, 0);
+        }
     }
     
     ESP_LOGI(TAG, "Menu UI created with %d buttons", MENU_ACTION_COUNT);
