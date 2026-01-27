@@ -10,7 +10,11 @@
                 "CONFIG_FATFS_API_ENCODING_UTF_8=y",
                 "CONFIG_FATFS_FS_LOCK=5",
                 "CONFIG_FLASH_CUSTOM_ASSETS=y",
-                "CONFIG_CUSTOM_ASSETS_FILE=\"https://xiaozhi-ai-iot.vn/api/v1/ota/assets/default.bin\""
+                "CONFIG_CUSTOM_ASSETS_FILE=\"https://xiaozhi-ai-iot.vn/api/v1/ota/assets/default.bin\"",
+                "CONFIG_RECEIVE_CUSTOM_MESSAGE=y",
+                "CONFIG_WEATHER_IDLE_DISPLAY_ENABLE=y",
+                "CONFIG_TOUCH_PANEL_ENABLE=y",
+                "CONFIG_SD_CARD_ENABLE=y"
             ]
         }
     ]
