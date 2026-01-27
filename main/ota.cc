@@ -377,6 +377,32 @@ bool Ota::CheckVersion(std::string& url) {
         ESP_LOGW(TAG, "No firmware section found!");
     }
 
+    // Parse theme config (for clock colors, menu colors, etc.)
+    has_theme_ = false;
+    cJSON *theme = cJSON_GetObjectItem(root, "theme");
+    if (cJSON_IsObject(theme)) {
+        char* theme_str = cJSON_PrintUnformatted(theme);
+        if (theme_str) {
+            theme_json_ = theme_str;
+            has_theme_ = true;
+            cJSON_free(theme_str);
+            ESP_LOGI(TAG, "Theme config received from server");
+        }
+    }
+    
+    // Parse agents list (for multi-agent support)
+    has_agents_ = false;
+    cJSON *agents = cJSON_GetObjectItem(root, "agents");
+    if (cJSON_IsArray(agents)) {
+        char* agents_str = cJSON_PrintUnformatted(agents);
+        if (agents_str) {
+            agents_json_ = std::string("{\"agents\":") + agents_str + "}";
+            has_agents_ = true;
+            cJSON_free(agents_str);
+            ESP_LOGI(TAG, "Agents list received from server: %d agents", cJSON_GetArraySize(agents));
+        }
+    }
+
     cJSON_Delete(root);
     return true;
 }
