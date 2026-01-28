@@ -1,0 +1,15 @@
+# LCD 2.8" Vietnam Board Configuration
+# XiaoZhi AI IoT Vietnam ES3N28P
+
+# Board selection
+CONFIG_BOARD_TYPE_XIAOZHI_AI_IOT_VIETNAM_ES3N28P_LCD_2_8=y
+
+# Touch panel settings
+CONFIG_TOUCH_PANEL_ENABLE=y
+
+# LCD Display Settings - ILI9341 240x320
+CONFIG_LV_COLOR_16_SWAP=y
+CONFIG_LV_COLOR_DEPTH_16=y
+
+# SD Card support (if available)
+# CONFIG_SD_CARD_SPI_INTERFACE=y
