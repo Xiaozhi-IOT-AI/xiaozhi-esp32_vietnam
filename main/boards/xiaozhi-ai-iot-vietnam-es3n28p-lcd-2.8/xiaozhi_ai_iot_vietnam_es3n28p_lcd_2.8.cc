@@ -30,6 +30,7 @@
 #include "features/lunar/lunar_calendar.h"
 #include "features/theme/analog_clock.h"
 #include "features/music/esp32_radio.h"
+#include "features/agent/agent_selector.h"
 
 // Declare fonts for info page
 LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
@@ -71,6 +72,23 @@ LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 
 // Global variables for touch callback
 
+// Task wrapper for async radio station change (avoid blocking touch callback)
+static void RadioNextStationTask(void* param) {
+    auto radio = Application::GetInstance().GetRadio();
+    if (radio) {
+        radio->NextStation();
+    }
+    vTaskDelete(NULL);
+}
+
+static void RadioPrevStationTask(void* param) {
+    auto radio = Application::GetInstance().GetRadio();
+    if (radio) {
+        radio->PreviousStation();
+    }
+    vTaskDelete(NULL);
+}
+
 class XiaozhiAIIoTEs3n28p : public WifiBoard {
  private:
   Button boot_button_;
@@ -78,10 +96,12 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
   i2c_master_bus_handle_t codec_i2c_bus_;
   MenuUI* menu_ui_ = nullptr;
   AnalogClock* analog_clock_ = nullptr;
+  AgentSelector* agent_selector_ = nullptr;
   lv_obj_t* info_page_ = nullptr;
   bool menu_visible_ = false;
   bool clock_visible_ = false;
   bool info_visible_ = false;
+  bool agent_selector_visible_ = false;
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
   LcdTouch *touch_;
   // Touch interrupt semaphore
@@ -311,6 +331,9 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
                           DISPLAY_WIDTH, DISPLAY_HEIGHT, 
                           DISPLAY_SWAP_XY, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     
+    // Set swipe detection threshold (pixels) - lower = more sensitive
+    touch_->SetSwipeThreshold(50);
+    
     touch_->SetInterruptCallback([this]()->bool {
         return this->WaitForTouchEvent();
     });
@@ -340,13 +363,20 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
       
       // When menu is visible, handle long press and TAP directly
       if (menu_visible_) {
-        if (gesture == TOUCH_GESTURE_LONG_PRESS) {
-          ESP_LOGI(TAG, "Long press - hiding menu");
-          this->HideMenu();
-        } else if (gesture == TOUCH_GESTURE_TAP && menu_ui_) {
-          // Handle TAP directly on menu buttons
-          ESP_LOGI(TAG, "TAP on menu at (%d, %d)", x, y);
-          menu_ui_->HandleTouch(x, y);
+        // Both TAP and LONG_PRESS should trigger button click when menu is visible
+        // (Touch detection sometimes reports LONG_PRESS for normal taps)
+        if (gesture == TOUCH_GESTURE_TAP || gesture == TOUCH_GESTURE_LONG_PRESS) {
+          ESP_LOGI(TAG, "Touch on menu at (%d, %d) - gesture: %d", x, y, static_cast<int>(gesture));
+          if (menu_ui_) {
+            bool handled = menu_ui_->HandleTouch(x, y);
+            if (handled) {
+              ESP_LOGI(TAG, "Menu button pressed!");
+            } else {
+              // Tap outside buttons - hide menu
+              ESP_LOGI(TAG, "Tap outside menu buttons - hiding menu");
+              this->HideMenu();
+            }
+          }
         }
         return;
       }
@@ -366,18 +396,18 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
                 vTaskDelay(pdMS_TO_TICKS(500));
               }
             } else {
-              auto& board = Board::GetInstance();
-              auto backlight = board.GetBacklight();
-              int new_brightness = backlight->brightness();
-              
-              // Swipe right - increase brightness
-              new_brightness += 5;
-              if (new_brightness > 100) new_brightness = 100;
-              ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
-              
-              backlight->SetBrightness(new_brightness);
-              auto display = board.GetDisplay();
-              display->ShowNotification("Brightness: " + std::to_string(new_brightness));
+              // Check if Radio is playing - change to next station
+              auto& app = Application::GetInstance();
+              auto radio = app.GetRadio();
+              if (radio && radio->IsPlaying()) {
+                ESP_LOGI(TAG, "📻 Swipe Right - Next radio station (async)");
+                // Run in separate task to avoid blocking touch callback
+                xTaskCreate(RadioNextStationTask, "radio_next", 4096, nullptr, 5, nullptr);
+              } else {
+                // No media playing - switch to next agent
+                ESP_LOGI(TAG, "🤖 Swipe Right - Next agent");
+                this->NextAgent();
+              }
             }
           }
           break;
@@ -394,20 +424,20 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
                 sd_music->prev();
                 vTaskDelay(pdMS_TO_TICKS(500));
               }
-              break;
+            } else {
+              // Check if Radio is playing - change to previous station
+              auto& app = Application::GetInstance();
+              auto radio = app.GetRadio();
+              if (radio && radio->IsPlaying()) {
+                ESP_LOGI(TAG, "📻 Swipe Left - Previous radio station (async)");
+                // Run in separate task to avoid blocking touch callback
+                xTaskCreate(RadioPrevStationTask, "radio_prev", 4096, nullptr, 5, nullptr);
+              } else {
+                // No media playing - switch to previous agent
+                ESP_LOGI(TAG, "🤖 Swipe Left - Previous agent");
+                this->PreviousAgent();
+              }
             }
-            auto& board = Board::GetInstance();
-            auto backlight = board.GetBacklight();
-            int new_brightness = backlight->brightness();
-            
-            // Swipe left - decrease brightness
-            new_brightness -= 5;
-            if (new_brightness <= 0) new_brightness = 0;  // Min 5% to keep visible
-            ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
-            
-            backlight->SetBrightness(new_brightness);
-            auto display = board.GetDisplay();
-            display->ShowNotification("Brightness: " + std::to_string(new_brightness));
           }
           break;
         case TOUCH_GESTURE_SWIPE_DOWN:
@@ -751,6 +781,100 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
       HideMenu();
     } else {
       ShowMenu();
+    }
+  }
+
+  void InitializeAgentSelector() {
+    if (agent_selector_) return;  // Already initialized
+    
+    lvgl_port_lock(0);
+    lv_obj_t* screen = lv_disp_get_scr_act(NULL);
+    agent_selector_ = new AgentSelector(screen, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    
+    // Set callback for when agent is selected
+    agent_selector_->SetCallback([](const AgentInfo* agent, void* data) {
+      auto* board = static_cast<XiaozhiAIIoTEs3n28p*>(data);
+      ESP_LOGI(TAG, "Agent selected: %s (id: %s)", agent->name, agent->id);
+      
+      // Show notification
+      char msg[128];
+      snprintf(msg, sizeof(msg), "🤖 Đã chọn: %s", agent->name);
+      board->GetDisplay()->ShowNotification(msg);
+      
+      // TODO: Reconnect WebSocket with new Agent-Id
+      // This would require access to the Protocol instance
+    }, this);
+    
+    lvgl_port_unlock();
+    
+    // Fetch agents from server in background
+    xTaskCreate([](void* param) {
+      auto* selector = static_cast<AgentSelector*>(param);
+      vTaskDelay(pdMS_TO_TICKS(2000));  // Wait for network
+      selector->FetchAgentsFromServer();
+      vTaskDelete(NULL);
+    }, "fetch_agents", 4096, agent_selector_, 5, NULL);
+    
+    ESP_LOGI(TAG, "Agent selector initialized");
+  }
+
+  void ShowAgentSelector() {
+    if (!agent_selector_) {
+      InitializeAgentSelector();
+    }
+    
+    if (agent_selector_ && !agent_selector_visible_) {
+      lvgl_port_lock(0);
+      agent_selector_->Show();
+      lvgl_port_unlock();
+      agent_selector_visible_ = true;
+      if (touch_) {
+        touch_->SetBypassGesture(true);
+      }
+      ESP_LOGI(TAG, "Agent selector shown");
+    }
+  }
+
+  void HideAgentSelector() {
+    if (agent_selector_ && agent_selector_visible_) {
+      lvgl_port_lock(0);
+      agent_selector_->Hide();
+      lvgl_port_unlock();
+      agent_selector_visible_ = false;
+      if (touch_) {
+        touch_->SetBypassGesture(false);
+      }
+      ESP_LOGI(TAG, "Agent selector hidden");
+    }
+  }
+
+  void NextAgent() {
+    if (!agent_selector_) {
+      InitializeAgentSelector();
+    }
+    if (agent_selector_) {
+      agent_selector_->NextAgent();
+      const AgentInfo* agent = agent_selector_->GetActiveAgent();
+      if (agent) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "🤖 %s", agent->name);
+        GetDisplay()->ShowNotification(msg);
+      }
+    }
+  }
+
+  void PreviousAgent() {
+    if (!agent_selector_) {
+      InitializeAgentSelector();
+    }
+    if (agent_selector_) {
+      agent_selector_->PreviousAgent();
+      const AgentInfo* agent = agent_selector_->GetActiveAgent();
+      if (agent) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "🤖 %s", agent->name);
+        GetDisplay()->ShowNotification(msg);
+      }
     }
   }
 

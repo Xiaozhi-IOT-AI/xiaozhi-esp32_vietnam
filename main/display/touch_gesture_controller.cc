@@ -1,4 +1,6 @@
 #include "touch_gesture_controller.h"
+#include "../application.h"
+#include "../features/music/esp32_radio.h"
 #include <esp_log.h>
 
 static const char* TAG = "TouchGestureCtrl";
@@ -129,6 +131,14 @@ void TouchGestureController::HandleSwipeDown(int16_t x, int16_t y) {
 void TouchGestureController::HandleSwipeLeft(int16_t x, int16_t y) {
     ESP_LOGI(TAG, "👈 Swipe Left");
     
+    // Check if Radio is playing - change to previous station
+    auto radio = Application::GetInstance().GetRadio();
+    if (radio && radio->IsPlaying()) {
+        ESP_LOGI(TAG, "📻 Radio playing - Previous station");
+        radio->PreviousStation();
+        return;
+    }
+    
     switch (current_mode_) {
         case SCREEN_MODE_CLOCK:
             // Previous clock face
@@ -177,6 +187,14 @@ void TouchGestureController::HandleSwipeLeft(int16_t x, int16_t y) {
 
 void TouchGestureController::HandleSwipeRight(int16_t x, int16_t y) {
     ESP_LOGI(TAG, "👉 Swipe Right");
+    
+    // Check if Radio is playing - change to next station
+    auto radio = Application::GetInstance().GetRadio();
+    if (radio && radio->IsPlaying()) {
+        ESP_LOGI(TAG, "📻 Radio playing - Next station");
+        radio->NextStation();
+        return;
+    }
     
     switch (current_mode_) {
         case SCREEN_MODE_CLOCK:

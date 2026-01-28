@@ -2,6 +2,8 @@
 #include "../theme/theme_config.h"
 #include "../theme/image_downloader.h"
 #include "settings.h"
+#include "board.h"
+#include "system_info.h"
 #include <cJSON.h>
 #include <esp_log.h>
 #include <cstring>
@@ -585,4 +587,119 @@ void AgentSelector::OnPrevClick(lv_event_t* e) {
 void AgentSelector::OnNextClick(lv_event_t* e) {
     AgentSelector* self = static_cast<AgentSelector*>(lv_event_get_user_data(e));
     self->NextAgent();
+}
+
+std::string AgentSelector::GetActiveAgentId() const {
+    const AgentInfo* active = GetActiveAgent();
+    if (active) {
+        return std::string(active->id);
+    }
+    
+    // Fallback to NVS
+    Settings settings("agent", false);
+    return settings.GetString("active_id");
+}
+
+bool AgentSelector::FetchAgentsFromServer(const std::string& base_url) {
+    std::string url = base_url;
+    if (url.empty()) {
+        // Get base URL from settings or config
+        Settings ws_settings("websocket", false);
+        url = ws_settings.GetString("url");
+        if (url.empty()) {
+            url = CONFIG_OTA_URL;
+        }
+        
+        // Transform to agents endpoint
+        // e.g. "https://xiaozhi-ai-iot.vn/api/v1/ota/" -> "https://xiaozhi-ai-iot.vn/api/v1/device/agents"
+        size_t pos = url.find("/ota");
+        if (pos != std::string::npos) {
+            url = url.substr(0, pos) + "/device/agents";
+        } else {
+            pos = url.rfind('/');
+            if (pos != std::string::npos && pos > 8) {  // After "https://"
+                url = url.substr(0, pos) + "/device/agents";
+            }
+        }
+    }
+    
+    ESP_LOGI(TAG, "Fetching agents from: %s", url.c_str());
+    
+    auto& board = Board::GetInstance();
+    auto network = board.GetNetwork();
+    if (!network) {
+        ESP_LOGE(TAG, "Network not available");
+        return false;
+    }
+    
+    auto http = network->CreateHttp(0);
+    if (!http) {
+        ESP_LOGE(TAG, "Failed to create HTTP client");
+        return false;
+    }
+    
+    // Set headers
+    http->SetHeader("device-id", SystemInfo::GetMacAddress().c_str());
+    http->SetHeader("client-id", board.GetUuid());
+    http->SetHeader("Content-Type", "application/json");
+    
+    // Get token from settings
+    Settings ws_settings("websocket", false);
+    std::string token = ws_settings.GetString("token");
+    if (!token.empty()) {
+        http->SetHeader("authorization", ("Bearer " + token).c_str());
+    }
+    
+    if (!http->Open("GET", url)) {
+        ESP_LOGE(TAG, "Failed to connect to agents API");
+        return false;
+    }
+    
+    int status_code = http->GetStatusCode();
+    if (status_code != 200) {
+        ESP_LOGE(TAG, "Agents API returned status: %d", status_code);
+        http->Close();
+        return false;
+    }
+    
+    std::string response = http->ReadAll();
+    http->Close();
+    
+    if (response.empty()) {
+        ESP_LOGE(TAG, "Empty response from agents API");
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "Agents API response: %s", response.c_str());
+    
+    // Parse the response
+    if (!ParseAgentsJson(response.c_str())) {
+        ESP_LOGE(TAG, "Failed to parse agents response");
+        return false;
+    }
+    
+    // Match active agent from NVS
+    Settings agent_settings("agent", false);
+    std::string saved_id = agent_settings.GetString("active_id");
+    if (!saved_id.empty()) {
+        for (int i = 0; i < agents_.count; i++) {
+            if (saved_id == agents_.agents[i].id) {
+                agents_.active_index = i;
+                agents_.agents[i].is_active = true;
+                ESP_LOGI(TAG, "Matched saved agent: %s", agents_.agents[i].name);
+                break;
+            }
+        }
+    }
+    
+    // Update UI if visible
+    if (is_visible_) {
+        UpdateCurrentAgentDisplay();
+    }
+    
+    // Download icons in background
+    DownloadIcons();
+    
+    ESP_LOGI(TAG, "Fetched %d agents successfully", agents_.count);
+    return true;
 }

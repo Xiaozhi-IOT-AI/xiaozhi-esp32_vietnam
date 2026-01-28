@@ -69,6 +69,14 @@ Es8311AudioCodec::~Es8311AudioCodec() {
 
 void Es8311AudioCodec::UpdateDeviceState() {
     if ((input_enabled_ || output_enabled_) && dev_ == nullptr) {
+        // Enable I2S channels before opening codec device
+        if (tx_handle_ != nullptr) {
+            i2s_channel_enable(tx_handle_);
+        }
+        if (rx_handle_ != nullptr) {
+            i2s_channel_enable(rx_handle_);
+        }
+        
         esp_codec_dev_cfg_t dev_cfg = {
             .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
             .codec_if = codec_if_,
@@ -90,6 +98,13 @@ void Es8311AudioCodec::UpdateDeviceState() {
     } else if (!input_enabled_ && !output_enabled_ && dev_ != nullptr) {
         esp_codec_dev_close(dev_);
         dev_ = nullptr;
+        // Disable I2S channels when closing codec device
+        if (tx_handle_ != nullptr) {
+            i2s_channel_disable(tx_handle_);
+        }
+        if (rx_handle_ != nullptr) {
+            i2s_channel_disable(rx_handle_);
+        }
     }
     if (pa_pin_ != GPIO_NUM_NC) {
         int level = output_enabled_ ? 1 : 0;
@@ -183,15 +198,134 @@ void Es8311AudioCodec::EnableOutput(bool enable) {
 }
 
 int Es8311AudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
+    if (input_enabled_ && dev_ != nullptr) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(dev_, (void*)dest, samples * sizeof(int16_t)));
     }
     return samples;
 }
 
 int Es8311AudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
+    if (output_enabled_ && dev_ != nullptr) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(dev_, (void*)data, samples * sizeof(int16_t)));
     }
     return samples;
+}
+
+bool Es8311AudioCodec::SetOutputSampleRate(int sample_rate) {
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    
+    // Handle -1 to reset to original sample rate
+    if (sample_rate == -1) {
+        if (original_output_sample_rate_ > 0) {
+            sample_rate = original_output_sample_rate_;
+            ESP_LOGI(TAG, "ES8311: Resetting to original sample rate: %d Hz", sample_rate);
+        } else {
+            ESP_LOGW(TAG, "ES8311: Original sample rate not available");
+            return false;
+        }
+    }
+    
+    if (sample_rate <= 0 || sample_rate > 192000) {
+        ESP_LOGE(TAG, "ES8311: Invalid sample rate: %d", sample_rate);
+        return false;
+    }
+    
+    // If already at this sample rate, no need to change
+    if (output_sample_rate_ == sample_rate && input_sample_rate_ == sample_rate) {
+        ESP_LOGI(TAG, "ES8311: Already at sample rate %d Hz", sample_rate);
+        return true;
+    }
+    
+    ESP_LOGI(TAG, "ES8311: Changing sample rate from %d to %d Hz", output_sample_rate_, sample_rate);
+    
+    // Store current PA state
+    bool was_output_enabled = output_enabled_;
+    
+    // Close existing codec device
+    if (dev_ != nullptr) {
+        ESP_LOGI(TAG, "ES8311: Closing codec device for sample rate change");
+        esp_codec_dev_close(dev_);
+        esp_codec_dev_delete(dev_);
+        dev_ = nullptr;
+    }
+    
+    // Disable I2S TX channel for reconfiguration
+    if (tx_handle_ != nullptr) {
+        i2s_channel_disable(tx_handle_);
+    }
+    if (rx_handle_ != nullptr) {
+        i2s_channel_disable(rx_handle_);
+    }
+    
+    // Reconfigure I2S clock for new sample rate
+    i2s_std_clk_config_t clk_cfg = {
+        .sample_rate_hz = (uint32_t)sample_rate,
+        .clk_src = I2S_CLK_SRC_DEFAULT,
+        .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+#ifdef I2S_HW_VERSION_2
+        .ext_clk_freq_hz = 0,
+#endif
+    };
+    
+    esp_err_t ret = i2s_channel_reconfig_std_clock(tx_handle_, &clk_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ES8311: Failed to reconfigure I2S TX clock: %s", esp_err_to_name(ret));
+        // Re-enable channels with old settings
+        i2s_channel_enable(tx_handle_);
+        i2s_channel_enable(rx_handle_);
+        return false;
+    }
+    
+    ret = i2s_channel_reconfig_std_clock(rx_handle_, &clk_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "ES8311: Failed to reconfigure I2S RX clock: %s", esp_err_to_name(ret));
+    }
+    
+    // Re-enable I2S channels
+    i2s_channel_enable(tx_handle_);
+    i2s_channel_enable(rx_handle_);
+    
+    // Update sample rates
+    output_sample_rate_ = sample_rate;
+    input_sample_rate_ = sample_rate;  // ES8311 requires same rate for input/output
+    
+    // Recreate codec device with new sample rate
+    esp_codec_dev_cfg_t dev_cfg = {
+        .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
+        .codec_if = codec_if_,
+        .data_if = data_if_,
+    };
+    dev_ = esp_codec_dev_new(&dev_cfg);
+    if (dev_ == nullptr) {
+        ESP_LOGE(TAG, "ES8311: Failed to create new codec device");
+        return false;
+    }
+    
+    esp_codec_dev_sample_info_t fs = {
+        .bits_per_sample = 16,
+        .channel = 1,
+        .channel_mask = 0,
+        .sample_rate = (uint32_t)sample_rate,
+        .mclk_multiple = 0,
+    };
+    
+    ret = esp_codec_dev_open(dev_, &fs);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ES8311: Failed to open codec device with new sample rate: %s", esp_err_to_name(ret));
+        esp_codec_dev_delete(dev_);
+        dev_ = nullptr;
+        return false;
+    }
+    
+    // Restore gain and volume settings
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_set_in_gain(dev_, input_gain_));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_set_out_vol(dev_, output_volume_));
+    
+    // Restore PA if output was enabled
+    if (was_output_enabled && pa_pin_ != GPIO_NUM_NC) {
+        gpio_set_level(pa_pin_, pa_inverted_ ? 0 : 1);
+    }
+    
+    ESP_LOGI(TAG, "ES8311: Successfully changed sample rate to %d Hz", sample_rate);
+    return true;
 }

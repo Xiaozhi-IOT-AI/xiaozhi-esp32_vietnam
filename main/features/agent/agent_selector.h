@@ -62,10 +62,14 @@ public:
     void SetAgents(const AgentList& list);
     bool ParseAgentsJson(const char* json_str);
     
+    // Fetch agents from server API
+    bool FetchAgentsFromServer(const std::string& base_url = "");
+    
     // Get current agents
     const AgentList& GetAgents() const { return agents_; }
     const AgentInfo* GetActiveAgent() const;
     int GetActiveIndex() const { return agents_.active_index; }
+    std::string GetActiveAgentId() const;
     
     // Navigation (for swipe gestures)
     void NextAgent();

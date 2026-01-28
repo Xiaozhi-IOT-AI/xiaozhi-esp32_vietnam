@@ -23,7 +23,8 @@
 #define TAG "Esp32Radio"
 
 Esp32Radio::Esp32Radio() : current_station_name_(), current_station_url_(),
-                         station_name_displayed_(false), current_station_volume_(4.5f), radio_stations_(),
+                         station_name_displayed_(false), current_station_volume_(4.5f), 
+                         current_station_index_(0), station_keys_(), radio_stations_(),
                          display_mode_(DISPLAY_MODE_SPECTRUM), is_playing_(false), is_downloading_(false), 
                          play_thread_(), download_thread_(), audio_buffer_(), buffer_mutex_(), 
                          buffer_cv_(), buffer_size_(0), aac_decoder_(nullptr), aac_info_(),
@@ -95,6 +96,23 @@ void Esp32Radio::InitializeRadioStations() {
 
     // === VOV – TIẾNG ANH ===
     radio_stations_["VOV5_ENGLISH"]     = RadioStation("VOV 5 – English 24/7",          "https://stream.vovmedia.vn/vov247",      "Kênh tiếng Anh quốc tế",                   "International",        4.0f);
+
+    // Build ordered station keys list for navigation
+    station_keys_.clear();
+    station_keys_.push_back("VOV1");
+    station_keys_.push_back("VOV2");
+    station_keys_.push_back("VOV3");
+    station_keys_.push_back("VOV5");
+    station_keys_.push_back("VOV_GT_HN");
+    station_keys_.push_back("VOV_GT_HCM");
+    station_keys_.push_back("VOV_MEKONG");
+    station_keys_.push_back("VOV4_MIENTRUNG");
+    station_keys_.push_back("VOV4_TAYBAC");
+    station_keys_.push_back("VOV4_DONGBAC");
+    station_keys_.push_back("VOV4_TAYNGUYEN");
+    station_keys_.push_back("VOV4_DBSCL");
+    station_keys_.push_back("VOV4_HCM");
+    station_keys_.push_back("VOV5_ENGLISH");
 
     ESP_LOGI(TAG, "Initialized %d VN radio stations (AAC format only)", radio_stations_.size());
 }
@@ -195,6 +213,17 @@ bool Esp32Radio::PlayUrl(const std::string& radio_url, const std::string& statio
     
     // Stop previous playback
     Stop();
+    
+    // CRITICAL: Wait for cleanup to complete
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Double-check: Force cleanup if threads still joinable
+    if (download_thread_.joinable() || play_thread_.joinable()) {
+        ESP_LOGW(TAG, "Threads still joinable after Stop, force detaching...");
+        if (download_thread_.joinable()) download_thread_.detach();
+        if (play_thread_.joinable()) play_thread_.detach();
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 	
 	// --- CLEAN DISPLAY RAM BEFORE STARTING RADIO ---
 	auto display = Board::GetInstance().GetDisplay();
@@ -233,7 +262,7 @@ bool Esp32Radio::PlayUrl(const std::string& radio_url, const std::string& statio
     is_playing_ = true;
     play_thread_ = std::thread(&Esp32Radio::PlayRadioStream, this);
     
-    ESP_LOGI(TAG, "Radio streaming threads started successfully");
+    ESP_LOGI(TAG, "Radio streaming threads started successfully for: %s", current_station_name_.c_str());
     return true;
 }
 
@@ -246,51 +275,113 @@ bool Esp32Radio::Stop() {
     ESP_LOGI(TAG, "Stopping radio streaming - current state: downloading=%d, playing=%d", 
             is_downloading_.load(), is_playing_.load());
 
-    // Reset the sample rate to the original value
-    ResetSampleRate();
-    
-    // Check if there is any streaming in progress
-    if (!is_playing_ && !is_downloading_) {
-        ESP_LOGW(TAG, "No radio streaming in progress");
-        return true;
-    }
-    
-    // Stop download and playback flags
+    // 1. Set flags FIRST to signal threads to exit
     is_downloading_ = false;
     is_playing_ = false;
     
-    // Clear the station name display
-    auto& board = Board::GetInstance();
-    auto display = board.GetDisplay();
-    if (display) {
-        display->SetMusicInfo("");  // Clear the display
-        ESP_LOGI(TAG, "Cleared radio station display");
+    // 2. Notify threads multiple times to wake them up
+    for (int i = 0; i < 5; i++) {
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            buffer_cv_.notify_all();
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     
-    // Notify all waiting threads
-    {
-        std::lock_guard<std::mutex> lock(buffer_mutex_);
-        buffer_cv_.notify_all();
+    // 3. Wait for download thread with TIMEOUT
+    const int MAX_WAIT_MS = 500;
+    int wait_time = 0;
+    while (download_thread_.joinable() && wait_time < MAX_WAIT_MS) {
+        // Try to join with short waits
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            buffer_cv_.notify_all();
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+        wait_time += 20;
+        
+        // Check if thread finished
+        if (!is_downloading_.load()) {
+            // Thread should be finishing
+            if (download_thread_.joinable()) {
+                // Give it a bit more time
+                vTaskDelay(pdMS_TO_TICKS(50));
+                if (download_thread_.joinable()) {
+                    try {
+                        download_thread_.join();
+                        ESP_LOGI(TAG, "Download thread joined after %dms", wait_time);
+                    } catch (...) {
+                        ESP_LOGW(TAG, "Download thread join exception, detaching");
+                        download_thread_.detach();
+                    }
+                }
+            }
+            break;
+        }
     }
     
-    // Wait for threads to finish
     if (download_thread_.joinable()) {
-        download_thread_.join();
-        ESP_LOGI(TAG, "Download thread joined in Stop");
+        ESP_LOGW(TAG, "Download thread taking too long (%dms), detaching...", wait_time);
+        download_thread_.detach();
+    }
+    
+    // 4. Wait for play thread with TIMEOUT
+    wait_time = 0;
+    while (play_thread_.joinable() && wait_time < MAX_WAIT_MS) {
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            buffer_cv_.notify_all();
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+        wait_time += 20;
+        
+        if (!is_playing_.load()) {
+            if (play_thread_.joinable()) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                if (play_thread_.joinable()) {
+                    try {
+                        play_thread_.join();
+                        ESP_LOGI(TAG, "Play thread joined after %dms", wait_time);
+                    } catch (...) {
+                        ESP_LOGW(TAG, "Play thread join exception, detaching");
+                        play_thread_.detach();
+                    }
+                }
+            }
+            break;
+        }
     }
     
     if (play_thread_.joinable()) {
-        play_thread_.join();
-        ESP_LOGI(TAG, "Play thread joined in Stop");
+        ESP_LOGW(TAG, "Play thread taking too long (%dms), detaching...", wait_time);
+        play_thread_.detach();
     }
     
-    // Stop FFT display
-    if (display && display_mode_ == DISPLAY_MODE_SPECTRUM) {
-        display->StopFFT();
-        ESP_LOGI(TAG, "Stopped FFT display in Stop (spectrum mode)");
+    // 5. Clear display
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    if (display) {
+        display->SetMusicInfo("");
+        if (display_mode_ == DISPLAY_MODE_SPECTRUM) {
+            display->StopFFT();
+            display->ReleaseAudioBuffFFT();
+        }
+        ESP_LOGI(TAG, "Cleared radio display");
     }
     
-    ESP_LOGI(TAG, "Radio streaming stopped successfully");
+    // 6. Clear audio buffer
+    ClearAudioBuffer();
+    
+    // 7. Cleanup AAC decoder for fresh start
+    CleanupAacDecoder();
+    
+    // 8. Reset sample rate
+    ResetSampleRate();
+    
+    // 9. Reset flags
+    station_name_displayed_ = false;
+    
+    ESP_LOGI(TAG, "Radio streaming stopped successfully - ready for next station");
     return true;
 }
 
@@ -508,22 +599,26 @@ void Esp32Radio::PlayRadioStream() {
     auto display = board.GetDisplay();
     
     while (is_playing_) {
-        // Check device state, only play radio when idle
+        // Check device state - allow radio during startup/connecting (no WebSocket dependency)
         auto& app = Application::GetInstance();
         DeviceState current_state = app.GetDeviceState();
         
+        // Allow radio playback in these states:
+        // - kDeviceStateIdle: Normal idle state
+        // - kDeviceStateStarting: Device booting, WebSocket not connected yet
+        // - kDeviceStateConnecting: WebSocket connecting
+        bool can_play = (current_state == kDeviceStateIdle || 
+                         current_state == kDeviceStateStarting ||
+                         current_state == kDeviceStateConnecting);
+        
         if (current_state == kDeviceStateListening || current_state == kDeviceStateSpeaking) {
-            if (current_state == kDeviceStateSpeaking) {
-                ESP_LOGI(TAG, "Device is in speaking state, switching to listening state for radio playback");
-            }
-            if (current_state == kDeviceStateListening) {
-                ESP_LOGI(TAG, "Device is in listening state, switching to idle state for radio playback");
-            }
-            // Switch state
-            app.ToggleChatState(); // Change to idle state
-            vTaskDelay(pdMS_TO_TICKS(300));
+            // User is interacting with AI - stop radio or let it continue in background
+            ESP_LOGI(TAG, "Device is in %s state, pausing radio", 
+                     current_state == kDeviceStateListening ? "listening" : "speaking");
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
-        } else if (current_state != kDeviceStateIdle) {
+        } else if (!can_play) {
+            // Other states like Upgrading, WifiConfiguring, etc. - pause
             ESP_LOGD(TAG, "Device state is %d, pausing radio playback", current_state);
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
@@ -910,4 +1005,74 @@ void Esp32Radio::SetDisplayMode(DisplayMode mode) {
     ESP_LOGI(TAG, "Display mode changed from %s to %s", 
             (old_mode == DISPLAY_MODE_SPECTRUM) ? "SPECTRUM" : "INFO",
             (mode == DISPLAY_MODE_SPECTRUM) ? "SPECTRUM" : "INFO");
+}
+
+bool Esp32Radio::NextStation() {
+    if (station_keys_.empty()) {
+        ESP_LOGW(TAG, "No stations available");
+        return false;
+    }
+    
+    // Find current station index if playing
+    if (!current_station_name_.empty()) {
+        for (size_t i = 0; i < station_keys_.size(); i++) {
+            if (radio_stations_[station_keys_[i]].name == current_station_name_) {
+                current_station_index_ = i;
+                break;
+            }
+        }
+    }
+    
+    // Move to next station (wrap around)
+    current_station_index_ = (current_station_index_ + 1) % station_keys_.size();
+    
+    const std::string& key = station_keys_[current_station_index_];
+    const std::string& station_name = radio_stations_[key].name;
+    ESP_LOGI(TAG, "📻 Next station [%d/%d]: %s", current_station_index_ + 1, (int)station_keys_.size(), 
+             station_name.c_str());
+    
+    // Show loading message immediately for user feedback
+    auto display = Board::GetInstance().GetDisplay();
+    if (display) {
+        std::string loading_msg = "⏳ Đang chuyển: " + station_name;
+        display->SetMusicInfo(loading_msg.c_str());
+    }
+    
+    return PlayStation(key);
+}
+
+bool Esp32Radio::PreviousStation() {
+    if (station_keys_.empty()) {
+        ESP_LOGW(TAG, "No stations available");
+        return false;
+    }
+    
+    // Find current station index if playing
+    if (!current_station_name_.empty()) {
+        for (size_t i = 0; i < station_keys_.size(); i++) {
+            if (radio_stations_[station_keys_[i]].name == current_station_name_) {
+                current_station_index_ = i;
+                break;
+            }
+        }
+    }
+    
+    // Move to previous station (wrap around)
+    current_station_index_ = (current_station_index_ == 0) 
+        ? station_keys_.size() - 1 
+        : current_station_index_ - 1;
+    
+    const std::string& key = station_keys_[current_station_index_];
+    const std::string& station_name = radio_stations_[key].name;
+    ESP_LOGI(TAG, "📻 Previous station [%d/%d]: %s", current_station_index_ + 1, (int)station_keys_.size(), 
+             station_name.c_str());
+    
+    // Show loading message immediately for user feedback
+    auto display = Board::GetInstance().GetDisplay();
+    if (display) {
+        std::string loading_msg = "⏳ Đang chuyển: " + station_name;
+        display->SetMusicInfo(loading_msg.c_str());
+    }
+    
+    return PlayStation(key);
 }

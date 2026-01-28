@@ -53,6 +53,8 @@ private:
     std::string current_station_url_;
     bool station_name_displayed_;
     float current_station_volume_;  // Current station's volume amplification factor
+    int current_station_index_;     // Current station index for navigation
+    std::vector<std::string> station_keys_;  // Ordered list of station keys
     
     // Predefined radio station list
     std::map<std::string, RadioStation> radio_stations_;
@@ -113,6 +115,12 @@ public:
     // Get current playback status
     virtual bool IsPlaying() const override { return is_playing_; }
     virtual std::string GetCurrentStation() const override { return current_station_name_; }
+    
+    // Station navigation (for swipe gestures)
+    bool NextStation();
+    bool PreviousStation();
+    int GetStationCount() const { return station_keys_.size(); }
+    int GetCurrentStationIndex() const { return current_station_index_; }
     
     // Buffer status
     virtual size_t GetBufferSize() const override { return buffer_size_; }

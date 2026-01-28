@@ -3,6 +3,7 @@
 #include "system_info.h"
 #include "application.h"
 #include "settings.h"
+#include "../features/agent/agent_selector.h"
 
 #include <cstring>
 #include <cJSON.h>
@@ -107,6 +108,14 @@ bool WebsocketProtocol::OpenAudioChannel() {
     websocket_->SetHeader("Protocol-Version", std::to_string(version_).c_str());
     websocket_->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
     websocket_->SetHeader("Client-Id", Board::GetInstance().GetUuid().c_str());
+    
+    // Send active agent ID if available
+    Settings agent_settings("agent", false);
+    std::string active_agent_id = agent_settings.GetString("active_id");
+    if (!active_agent_id.empty()) {
+        websocket_->SetHeader("Agent-Id", active_agent_id.c_str());
+        ESP_LOGI(TAG, "Using agent: %s", active_agent_id.c_str());
+    }
 
     websocket_->OnData([this](const char* data, size_t len, bool binary) {
         if (binary) {

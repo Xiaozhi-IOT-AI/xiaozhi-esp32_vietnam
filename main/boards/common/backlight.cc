@@ -30,14 +30,14 @@ Backlight::~Backlight() {
 }
 
 void Backlight::RestoreBrightness() {
-    // Load brightness from settings
+    // Load brightness from settings - default to 100% for Vietnam board
     Settings settings("display");  
-    int saved_brightness = settings.GetInt("brightness", 75);
+    int saved_brightness = settings.GetInt("brightness", 100);
     
     // 检查亮度值是否为0或过小，设置默认值
     if (saved_brightness <= 0) {
-        ESP_LOGW(TAG, "Brightness value (%d) is too small, setting to default (10)", saved_brightness);
-        saved_brightness = 10;  // 设置一个较低的默认值
+        ESP_LOGW(TAG, "Brightness value (%d) is too small, setting to default (100)", saved_brightness);
+        saved_brightness = 100;  // 设置为100%
     }
     
     SetBrightness(saved_brightness);
