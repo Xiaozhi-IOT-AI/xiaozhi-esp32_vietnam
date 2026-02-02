@@ -492,7 +492,17 @@ void Application::Start() {
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         if (device_state_ == kDeviceStateSpeaking) {
+             // Debug log (limit frequency if needed)
+            static uint32_t packet_count = 0;
+            if (packet_count++ % 50 == 0) {
+                 ESP_LOGI(TAG, "Audio packet received: len=%zu", packet->size());
+            }
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        } else {
+             static uint32_t drop_count = 0;
+             if (drop_count++ % 50 == 0) {
+                 ESP_LOGW(TAG, "Audio packet dropped, state=%s", STATE_STRINGS[device_state_]);
+             }
         }
     });
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
@@ -518,8 +528,12 @@ void Application::Start() {
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
                     aborted_ = false;
-                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
-                        SetDeviceState(kDeviceStateSpeaking);
+                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening || device_state_ == kDeviceStateConnecting || device_state_ == kDeviceStateSpeaking) {
+                        if (device_state_ != kDeviceStateSpeaking) {
+                            SetDeviceState(kDeviceStateSpeaking);
+                        } else {
+                            ESP_LOGI(TAG, "Already speaking, keeping state (no decoder reset)");
+                        }
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
@@ -650,6 +664,14 @@ void Application::Start() {
                 ESP_LOGW(TAG, "Invalid custom message format: missing payload");
             }
 #endif
+        } else if (strcmp(type->valuestring, "goodbye") == 0) {
+            ESP_LOGI(TAG, "Received goodbye from server");
+            Schedule([this]() {
+                if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                    protocol_->CloseAudioChannel();
+                }
+                SetDeviceState(kDeviceStateIdle);
+            });
         } else {
             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
         }

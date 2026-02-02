@@ -2,6 +2,7 @@
 #include "board.h"
 #include "application.h"
 #include "settings.h"
+#include "system_info.h"
 
 #include <esp_log.h>
 #include <cstring>
@@ -62,6 +63,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     auto password = settings.GetString("password");
     int keepalive_interval = settings.GetInt("keepalive", 240);
     publish_topic_ = settings.GetString("publish_topic");
+    subscribe_topic_ = settings.GetString("subscribe_topic");
 
     if (endpoint.empty()) {
         ESP_LOGW(TAG, "MQTT endpoint is not specified");
@@ -88,6 +90,13 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
             on_connected_();
         }
         esp_timer_stop(reconnect_timer_);
+        
+        // Subscribe to receive messages from server (responses, notifications, reminders)
+        if (!subscribe_topic_.empty()) {
+            ESP_LOGI(TAG, "Subscribing to topic: %s", subscribe_topic_.c_str());
+            mqtt_->Subscribe(subscribe_topic_);
+            ESP_LOGI(TAG, "Subscribed to: %s", subscribe_topic_.c_str());
+        }
     });
 
     mqtt_->OnMessage([this](const std::string& topic, const std::string& payload) {
@@ -270,6 +279,19 @@ bool MqttProtocol::OpenAudioChannel() {
     });
 
     udp_->Connect(udp_server_, udp_port_);
+    
+    // Send a "bind" packet to tell server our UDP address
+    // This is necessary because server needs to know where to send audio back
+    // Without this, server can't send UDP audio packets to us
+    std::string bind_packet(16, 0);
+    bind_packet[0] = 0x00;  // type: bind/keepalive
+    bind_packet[1] = 0x00;  // flags
+    *(uint16_t*)&bind_packet[2] = 0;  // payload_len
+    *(uint32_t*)&bind_packet[4] = 0;  // ssrc
+    *(uint32_t*)&bind_packet[8] = 0;  // timestamp
+    *(uint32_t*)&bind_packet[12] = 0; // sequence
+    udp_->Send(bind_packet);
+    ESP_LOGI(TAG, "Sent UDP bind packet to server");
 
     if (on_audio_channel_opened_ != nullptr) {
         on_audio_channel_opened_();
@@ -283,6 +305,8 @@ std::string MqttProtocol::GetHelloMessage() {
     cJSON_AddStringToObject(root, "type", "hello");
     cJSON_AddNumberToObject(root, "version", 3);
     cJSON_AddStringToObject(root, "transport", "udp");
+    // Add device identifier so server can respond to correct device
+    cJSON_AddStringToObject(root, "device_id", SystemInfo::GetMacAddress().c_str());
     cJSON* features = cJSON_CreateObject();
 #if CONFIG_USE_SERVER_AEC
     cJSON_AddBoolToObject(features, "aec", true);
