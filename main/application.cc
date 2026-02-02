@@ -583,6 +583,61 @@ void Application::Start() {
             } else {
                 ESP_LOGW(TAG, "Alert command requires status, message and emotion");
             }
+        } else if (strcmp(type->valuestring, "notification") == 0) {
+            // Handle push notification with TTS
+            auto content = cJSON_GetObjectItem(root, "content");
+            auto title = cJSON_GetObjectItem(root, "title");
+            auto use_llm = cJSON_GetObjectItem(root, "useLLM");
+            
+            std::string notification_text;
+            if (cJSON_IsString(title) && strlen(title->valuestring) > 0) {
+                notification_text = std::string(title->valuestring) + ". ";
+            }
+            if (cJSON_IsString(content)) {
+                notification_text += content->valuestring;
+            }
+            
+            if (!notification_text.empty()) {
+                ESP_LOGI(TAG, "Received notification: %s", notification_text.c_str());
+                
+                // Show on display first
+                Schedule([this, display, notification_text]() {
+                    display->ShowNotification(notification_text.c_str());
+                });
+                
+                // Open audio channel and request TTS
+                Schedule([this, notification_text, use_llm]() {
+                    // Open audio channel if not already open
+                    if (!protocol_->IsAudioChannelOpened()) {
+                        SetDeviceState(kDeviceStateConnecting);
+                        if (!protocol_->OpenAudioChannel()) {
+                            ESP_LOGE(TAG, "Failed to open audio channel for notification");
+                            SetDeviceState(kDeviceStateIdle);
+                            // Play fallback sound
+                            audio_service_.PlaySound(Lang::Sounds::OGG_NOTIFY);
+                            return;
+                        }
+                    }
+                    
+                    // Build and send notification request to server
+                    cJSON* msg = cJSON_CreateObject();
+                    cJSON_AddStringToObject(msg, "type", "notification_speak");
+                    cJSON_AddStringToObject(msg, "content", notification_text.c_str());
+                    cJSON_AddBoolToObject(msg, "useLLM", 
+                        cJSON_IsTrue(use_llm) || (use_llm == nullptr));  // Default true
+                    
+                    char* json_str = cJSON_PrintUnformatted(msg);
+                    if (json_str) {
+                        protocol_->SendText(json_str);
+                        cJSON_free(json_str);
+                    }
+                    cJSON_Delete(msg);
+                    
+                    SetDeviceState(kDeviceStateSpeaking);
+                });
+            } else {
+                ESP_LOGW(TAG, "Notification content is empty");
+            }
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
         } else if (strcmp(type->valuestring, "custom") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
