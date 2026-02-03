@@ -34,7 +34,6 @@ public:
     const std::string& GetThemeJson() const { return theme_json_; }
     const std::string& GetAgentsJson() const { return agents_json_; }
     std::string GetCheckVersionUrl();
-    int GetActivationTimeoutMs() const { return activation_timeout_ms_; }
 
 private:
     std::string activation_message_;
