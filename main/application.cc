@@ -186,14 +186,21 @@ void Application::CheckNewVersion(Ota& ota) {
         }
 
         // This will block the loop until the activation is done or timeout
-        for (int i = 0; i < 10; ++i) {
-            ESP_LOGI(TAG, "Activating... %d/%d", i + 1, 10);
+        // Calculate max iterations based on server-provided timeout (default 300000ms = 5 min)
+        // Each iteration polls every 3 seconds
+        const int poll_interval_ms = 3000;
+        const int max_iterations = std::max(10, ota.GetActivationTimeoutMs() / poll_interval_ms);
+        ESP_LOGI(TAG, "Activation timeout: %dms, polling every %dms, max %d iterations", 
+                 ota.GetActivationTimeoutMs(), poll_interval_ms, max_iterations);
+        
+        for (int i = 0; i < max_iterations; ++i) {
+            ESP_LOGI(TAG, "Activating... %d/%d", i + 1, max_iterations);
             esp_err_t err = ota.Activate();
             if (err == ESP_OK) {
                 xEventGroupSetBits(event_group_, MAIN_EVENT_CHECK_NEW_VERSION_DONE);
                 break;
             } else if (err == ESP_ERR_TIMEOUT) {
-                vTaskDelay(pdMS_TO_TICKS(3000));
+                vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
             } else {
                 vTaskDelay(pdMS_TO_TICKS(10000));
             }
